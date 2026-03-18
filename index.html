@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>mesh 聊天 App（React）</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0f1419;
+      }
+
+      #root {
+        height: 100vh;
+      }
+
+      /* Chatscope Avatar：沒有 src 時顯示文字頭像更清楚 */
+      .cs-avatar {
+        background: #1f2933;
+        color: #e5e7eb;
+      }
+      .cs-avatar__name {
+        color: #e5e7eb;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
