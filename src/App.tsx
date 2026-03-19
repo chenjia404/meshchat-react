@@ -708,6 +708,11 @@ const App: React.FC = () => {
   const [groupInviteIds, setGroupInviteIds] = useState<Set<string>>(new Set());
   const [groupDissolveReason, setGroupDissolveReason] = useState("");
 
+  // 私聊對象連線狀態（peer_id -> 狀態字串）
+  const [peerStatusMap, setPeerStatusMap] = useState<Map<string, any>>(
+    () => new Map()
+  );
+
   // 自动删除（retention）选择弹窗
   const [retentionModalOpen, setRetentionModalOpen] = useState(false);
   const [retentionUnit, setRetentionUnit] = useState<
@@ -1307,6 +1312,23 @@ const App: React.FC = () => {
       type: blob.type || "image/png"
     });
     await sendFileForCurrentThread(file);
+  };
+
+  const loadPeerStatus = async (peerId: string) => {
+    const id = peerId.trim();
+    if (!id) return;
+    try {
+      const status = await get<any>(
+        `/api/v1/chat/peers/${encodeURIComponent(id)}/status`
+      );
+      setPeerStatusMap(prev => {
+        const next = new Map(prev);
+        next.set(id, status);
+        return next;
+      });
+    } catch {
+      // 忽略错误，维持旧状态
+    }
   };
 
   const connectPeer = async (peerId: string) => {
@@ -2010,6 +2032,8 @@ const App: React.FC = () => {
     } catch (err) {
       console.warn("connect 失败，可忽略:", err);
     }
+    // 主动发起连接后顺便拉一次状态
+    loadPeerStatus(peerId);
     alert("暂未找到现成会话，请在原页面发起聊天请求或等待对方同意。");
   };
 
@@ -2206,6 +2230,10 @@ const App: React.FC = () => {
                       if (thread.id) {
                         loadThreadMessages(thread.kind, thread.id);
                       }
+                      if (thread.kind === "direct") {
+                        const peerId = (thread as any).peerId as string | undefined;
+                        if (peerId) loadPeerStatus(peerId);
+                      }
                     }}
                     style={{
                       display: "flex",
@@ -2363,20 +2391,41 @@ const App: React.FC = () => {
                   </div>
                   <div style={{ fontSize: 12, opacity: 0.75, textAlign: "right", flexShrink: 0 }}>
                     {selectedThreadKind === "direct" ? (
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openRetentionModal()}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") openRetentionModal();
-                        }}
-                        style={{ cursor: "pointer" }}
-                      >
-                        自动删除：
-                        {selectedConversation?.retention_minutes
-                          ? `${selectedConversation.retention_minutes} 分钟`
-                          : "关闭"}
-                      </div>
+                      <>
+                        <div style={{ marginBottom: 4 }}>
+                          {(() => {
+                            const peerId = (selectedThread as any).peerId as
+                              | string
+                              | undefined;
+                            const status = peerId
+                              ? peerStatusMap.get(peerId) || null
+                              : null;
+                            const label = (() => {
+                              const s = (status?.state || status?.status || "").toLowerCase();
+                              if (!s) return "未知";
+                              if (s.includes("direct_ok") || s.includes("direct")) return "直连可用";
+                              if (s.includes("relay")) return "通过中继";
+                              if (s.includes("offline")) return "离线";
+                              return s;
+                            })();
+                            return <>连接状态：{label}</>;
+                          })()}
+                        </div>
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openRetentionModal()}
+                          onKeyDown={e => {
+                            if (e.key === "Enter" || e.key === " ") openRetentionModal();
+                          }}
+                          style={{ cursor: "pointer" }}
+                        >
+                          自动删除：
+                          {selectedConversation?.retention_minutes
+                            ? `${selectedConversation.retention_minutes} 分钟`
+                            : "关闭"}
+                        </div>
+                      </>
                     ) : selectedThreadKind === "group" ? (
                       <div
                         role={localGroupRole === "admin" ? "button" : undefined}
@@ -2384,8 +2433,11 @@ const App: React.FC = () => {
                         onClick={() => {
                           if (localGroupRole === "admin") openGroupRetentionModal();
                         }}
-                        onKeyDown={(e) => {
-                          if (localGroupRole === "admin" && (e.key === "Enter" || e.key === " ")) {
+                        onKeyDown={e => {
+                          if (
+                            localGroupRole === "admin" &&
+                            (e.key === "Enter" || e.key === " ")
+                          ) {
                             openGroupRetentionModal();
                           }
                         }}
@@ -3498,7 +3550,8 @@ const App: React.FC = () => {
           }}
         >
           <div>mesh 聊天</div>
-          {activeTab !== "me" ? (
+          {activeTab !== "me" &&
+          !(activeTab === "chat" && selectedThreadKind === "direct") ? (
             <button
               type="button"
               onClick={() => setPlusMenuOpen(v => !v)}
@@ -3522,7 +3575,10 @@ const App: React.FC = () => {
           ) : null}
         </div>
       ) : null}
-      {isMobile && activeTab === "chat" && mobileView === "chat" ? (
+      {isMobile &&
+      activeTab === "chat" &&
+      mobileView === "chat" &&
+      selectedThreadKind !== "direct" ? (
         <button
           type="button"
           onClick={() => setPlusMenuOpen(v => !v)}
