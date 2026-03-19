@@ -324,6 +324,18 @@ function resolveMeshserverAssetUrl(candidate?: string | null): string | undefine
   return api(v);
 }
 
+function buildMeshserverMediaUrl(
+  mediaId?: string | null,
+  connectionName?: string | null
+): string | undefined {
+  const id = String(mediaId || "").trim();
+  const conn = String(connectionName || "").trim();
+  if (!id || !conn) return undefined;
+  return api(
+    `/api/v1/meshserver/media/${encodeURIComponent(id)}?connection=${encodeURIComponent(conn)}`
+  );
+}
+
 function looksLikeImageSrc(text?: string | null): boolean {
   const v = (text || "").trim();
   if (!v) return false;
@@ -333,7 +345,10 @@ function looksLikeImageSrc(text?: string | null): boolean {
   return false;
 }
 
-function extractMeshserverImageSrc(m: MeshserverSyncMessage): string | undefined {
+function extractMeshserverImageSrc(
+  m: MeshserverSyncMessage,
+  connectionName?: string
+): string | undefined {
   const anyMsg = m as any;
   const contentAny = (anyMsg?.content || {}) as any;
 
@@ -344,9 +359,12 @@ function extractMeshserverImageSrc(m: MeshserverSyncMessage): string | undefined
   if (Array.isArray(images) && images.length > 0) {
     const first = images[0] || {};
     const url = first?.url;
+    const mediaId = first?.media_id || first?.mediaId;
     const mimeType = first?.mime_type || first?.mimeType || "image/jpeg";
     const inline = first?.inline_data || first?.inlineData;
 
+    const mediaUrl = buildMeshserverMediaUrl(mediaId, connectionName);
+    if (mediaUrl) return mediaUrl;
     if (looksLikeImageSrc(url)) return resolveMeshserverAssetUrl(url);
     if (inline && typeof inline === "string" && inline.trim()) {
       return `data:${mimeType};base64,${inline.trim()}`;
@@ -357,14 +375,26 @@ function extractMeshserverImageSrc(m: MeshserverSyncMessage): string | undefined
   if (Array.isArray(files) && files.length > 0) {
     const first = files[0] || {};
     const url = first?.url;
+    const mediaId = first?.media_id || first?.mediaId;
     const mimeType = first?.mime_type || first?.mimeType || "application/octet-stream";
     const inline = first?.inline_data || first?.inlineData;
 
+    const mediaUrl = buildMeshserverMediaUrl(mediaId, connectionName);
+    if (mediaUrl) return mediaUrl;
     if (looksLikeImageSrc(url)) return resolveMeshserverAssetUrl(url);
     if (inline && typeof inline === "string" && inline.trim()) {
       return `data:${mimeType};base64,${inline.trim()}`;
     }
   }
+
+  // 有些实现会把 media_id 直接放在 content 根层
+  const rootMediaId =
+    contentAny?.media_id ||
+    contentAny?.mediaId ||
+    contentAny?.image_media_id ||
+    contentAny?.imageMediaId;
+  const rootMediaUrl = buildMeshserverMediaUrl(rootMediaId, connectionName);
+  if (rootMediaUrl) return rootMediaUrl;
 
   // 旧字段兼容（可能是 url/base64 直接挂在 content 上）
   const candidates: Array<string | null | undefined> = [
@@ -1479,8 +1509,24 @@ const App: React.FC = () => {
   };
 
   const loadMeshCanCreateSpace = async (connectionName: string) => {
-    // 目前文档未覆盖 can_create_space 的字段名；这里做兼容解析。
-    // 先读 my_servers（响应结构：{ servers: [{ space: {...}, role: ... }] }）
+    // 新接口：连接成功后读取 server 级权限，判断是否允许创建 space。
+    const permsResp = await get<any>(
+      `/api/v1/meshserver/server/my_permissions?connection=${encodeURIComponent(connectionName)}`
+    ).catch(() => null);
+
+    const fromServerPerms = Boolean(
+      permsResp?.can_create_space ??
+        permsResp?.canCreateSpace ??
+        permsResp?.permissions?.can_create_space ??
+        permsResp?.permissions?.canCreateSpace
+    );
+
+    if (fromServerPerms) {
+      setMeshCanCreateSpace(true);
+      return;
+    }
+
+    // 兼容旧版后端：fallback 到 my_servers 的权限字段解析。
     const resp = await get<any>(
       `/api/v1/meshserver/my_servers?connection=${encodeURIComponent(connectionName)}`
     ).catch(() => null);
@@ -2401,9 +2447,15 @@ const App: React.FC = () => {
                       !!thread?.myUserId && m.sender_user_id === thread.myUserId;
                     const senderName = fromMe ? "我" : m.sender_user_id || "未知";
                     const letter = textAvatarLetter(senderName);
-                    const isImage = Number((m as any).message_type) === 2;
                     const caption = m.content?.text || "";
-                    const imageSrc = isImage ? extractMeshserverImageSrc(m) : undefined;
+                    const imageSrc = extractMeshserverImageSrc(
+                      m,
+                      thread?.connectionName
+                    );
+                    const isImage =
+                      !!imageSrc || Number((m as any).message_type) === 2;
+                    const showCaption =
+                      !!caption && !(isImage && looksLikeImageSrc(caption));
                     return (
                       <div
                         key={m.message_id}
@@ -2468,7 +2520,7 @@ const App: React.FC = () => {
                                       display: "block"
                                     }}
                                   />
-                                  {caption ? (
+                                  {showCaption ? (
                                     <div
                                       style={{
                                         marginTop: 6,
@@ -2483,7 +2535,7 @@ const App: React.FC = () => {
                                     </div>
                                   ) : null}
                                 </div>
-                              ) : caption ? (
+                              ) : showCaption ? (
                                 caption
                               ) : (
                                 "[圖片消息]"
