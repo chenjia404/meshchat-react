@@ -13,7 +13,7 @@ import {
   TypingIndicator
 } from "@chatscope/chat-ui-kit-react";
 
-type ThreadKind = "direct" | "group";
+type ThreadKind = "direct" | "group" | "meshserver_group";
 
 interface Me {
   peer_id: string;
@@ -48,6 +48,91 @@ interface GroupRaw {
   last_message_at?: string;
   last_message?: { plaintext?: string };
   retention_minutes?: number;
+}
+
+interface FriendRequestRaw {
+  request_id: string;
+  from_peer_id?: string;
+  to_peer_id?: string;
+  state?: string;
+  created_at?: string;
+  intro_text?: string;
+  nickname?: string;
+  bio?: string;
+  avatar?: string;
+  retention_minutes?: number;
+}
+
+// --- meshserver 中心化群（channel） ---
+interface MeshserverConnectionRaw {
+  name: string; // connection.name
+  peer_id: string;
+  user_id?: string;
+}
+
+interface MeshserverServerRaw {
+  id: string;
+  name: string;
+  avatar_url?: string;
+  description?: string;
+  visibility?: number;
+  member_count?: number;
+  allow_channel_creation?: boolean;
+}
+
+interface MeshserverChannelRaw {
+  channel_id: string;
+  server_id: string;
+  type: number; // 1=GROUP, 2=BROADCAST
+  name: string;
+  description?: string;
+  visibility?: number;
+  slow_mode_seconds?: number;
+  last_seq?: number;
+  can_view?: boolean;
+  can_send_message?: boolean;
+  can_send_image?: boolean;
+  can_send_file?: boolean;
+}
+
+interface MeshserverGroupThread {
+  kind: "meshserver_group";
+  threadId: string; // channel_id
+  channel_id: string;
+  server_id: string;
+  title: string;
+  subtitle?: string;
+  avatarUrl?: string;
+  connectionName: string; // connection.name
+  myUserId?: string;
+}
+
+interface MeshserverSyncMessage {
+  channel_id: string;
+  message_id: string;
+  seq?: number;
+  sender_user_id?: string;
+  message_type?: number;
+  content?: {
+    text?: string;
+    image_url?: string;
+    url?: string;
+    images?: Array<{
+      url?: string;
+      mime_type?: string;
+      inline_data?: string;
+      media_id?: string;
+      original_name?: string;
+    }>;
+    files?: Array<{
+      url?: string;
+      mime_type?: string;
+      inline_data?: string;
+      media_id?: string;
+      file_name?: string;
+    }>;
+  };
+  created_at_ms?: number;
 }
 
 interface DirectMessage {
@@ -223,6 +308,102 @@ function formatTime(value?: string | null): string {
   return d.toLocaleString();
 }
 
+function formatTimeFromMs(value?: number | null): string {
+  if (value == null) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.valueOf())) return "";
+  return d.toLocaleString();
+}
+
+function resolveMeshserverAssetUrl(candidate?: string | null): string | undefined {
+  const v = (candidate || "").trim();
+  if (!v) return undefined;
+  if (v.startsWith("data:image/")) return v;
+  if (v.startsWith("http://") || v.startsWith("https://")) return v;
+  // 后端可能返回 /blobs/xxx 或相对路径，这里交给 api() 处理相对拼接
+  return api(v);
+}
+
+function looksLikeImageSrc(text?: string | null): boolean {
+  const v = (text || "").trim();
+  if (!v) return false;
+  if (v.startsWith("data:image/")) return true;
+  if (v.startsWith("http://") || v.startsWith("https://")) return true;
+  if (v.startsWith("/")) return true;
+  return false;
+}
+
+function extractMeshserverImageSrc(m: MeshserverSyncMessage): string | undefined {
+  const anyMsg = m as any;
+  const contentAny = (anyMsg?.content || {}) as any;
+
+  const images = contentAny?.images;
+  const files = contentAny?.files;
+
+  // 按文档：image(2) 优先使用 content.images[0]
+  if (Array.isArray(images) && images.length > 0) {
+    const first = images[0] || {};
+    const url = first?.url;
+    const mimeType = first?.mime_type || first?.mimeType || "image/jpeg";
+    const inline = first?.inline_data || first?.inlineData;
+
+    if (looksLikeImageSrc(url)) return resolveMeshserverAssetUrl(url);
+    if (inline && typeof inline === "string" && inline.trim()) {
+      return `data:${mimeType};base64,${inline.trim()}`;
+    }
+  }
+
+  // 有些实现把图片放到 files 里（兜底）
+  if (Array.isArray(files) && files.length > 0) {
+    const first = files[0] || {};
+    const url = first?.url;
+    const mimeType = first?.mime_type || first?.mimeType || "application/octet-stream";
+    const inline = first?.inline_data || first?.inlineData;
+
+    if (looksLikeImageSrc(url)) return resolveMeshserverAssetUrl(url);
+    if (inline && typeof inline === "string" && inline.trim()) {
+      return `data:${mimeType};base64,${inline.trim()}`;
+    }
+  }
+
+  // 旧字段兼容（可能是 url/base64 直接挂在 content 上）
+  const candidates: Array<string | null | undefined> = [
+    contentAny?.image_url,
+    contentAny?.imageUrl,
+    contentAny?.url,
+    contentAny?.image,
+    contentAny?.file_url,
+    contentAny?.fileUrl,
+    contentAny?.data_url,
+    contentAny?.dataUrl,
+    contentAny?.base64,
+    contentAny?.base64_image,
+    anyMsg?.image_url,
+    anyMsg?.imageUrl,
+    anyMsg?.url,
+    anyMsg?.image,
+    contentAny?.media?.image_url,
+    contentAny?.media?.imageUrl,
+    contentAny?.media?.url,
+    contentAny?.text
+  ];
+
+  for (const c of candidates) {
+    if (looksLikeImageSrc(c)) return resolveMeshserverAssetUrl(c || undefined);
+  }
+
+  // base64 without data prefix: best-effort
+  const base64 = String(contentAny?.base64 || contentAny?.base64_image || "").trim();
+  const looksBase64 =
+    base64.length > 100 && /^[A-Za-z0-9+/]+={0,2}$/.test(base64) && !base64.includes(" ");
+  if (looksBase64) {
+    const mime = String(contentAny?.mime_type || contentAny?.mime || "image/jpeg").trim();
+    return `data:${mime};base64,${base64}`;
+  }
+
+  return undefined;
+}
+
 function deliveryStatusText(state?: string, deliveredAt?: string): string {
   const s = (state || "").trim();
   if (!s) return "";
@@ -230,11 +411,11 @@ function deliveryStatusText(state?: string, deliveredAt?: string): string {
     s === "sent"
       ? "已送出"
       : s === "delivered_local"
-        ? "已投遞"
+        ? "已投递"
         : s === "delivered_remote" || s === "delivered"
-          ? "已送達"
+          ? "已送达"
           : s === "read_remote" || s === "read"
-            ? "已讀"
+            ? "已读"
             : "";
   if (!label) return "";
   if (deliveredAt) {
@@ -251,14 +432,14 @@ function relativeTime(value?: string | null): string {
   if (Number.isNaN(stamp)) return "";
   const diff = Date.now() - stamp;
   const abs = Math.abs(diff);
-  if (abs < 60 * 1000) return diff >= 0 ? "剛剛" : "即將";
+  if (abs < 60 * 1000) return diff >= 0 ? "刚刚" : "即将";
   if (abs < 60 * 60 * 1000) {
-    return `${Math.round(abs / (60 * 1000))} 分鐘${diff >= 0 ? "前" : "後"}`;
+    return `${Math.round(abs / (60 * 1000))} 分钟${diff >= 0 ? "前" : "后"}`;
   }
   if (abs < 24 * 60 * 60 * 1000) {
-    return `${Math.round(abs / (60 * 60 * 1000))} 小時${diff >= 0 ? "前" : "後"}`;
+    return `${Math.round(abs / (60 * 60 * 1000))} 小时${diff >= 0 ? "前" : "后"}`;
   }
-  return `${Math.round(abs / (24 * 60 * 60 * 1000))} 天${diff >= 0 ? "前" : "後"}`;
+  return `${Math.round(abs / (24 * 60 * 60 * 1000))} 天${diff >= 0 ? "前" : "后"}`;
 }
 
 function displayName(contacts: ContactRaw[], peerID: string, fallback?: string): string {
@@ -362,8 +543,12 @@ const App: React.FC = () => {
   const [contactsRaw, setContactsRaw] = useState<ContactRaw[]>([]);
   const [conversations, setConversations] = useState<ConversationRaw[]>([]);
   const [groups, setGroups] = useState<GroupRaw[]>([]);
+  const [meshGroups, setMeshGroups] = useState<MeshserverGroupThread[]>([]);
+  const [requestsRaw, setRequestsRaw] = useState<FriendRequestRaw[]>([]);
 
-  const [messages, setMessages] = useState<Array<DirectMessage | GroupMessage>>([]);
+  const [messages, setMessages] = useState<
+    Array<DirectMessage | GroupMessage | MeshserverSyncMessage>
+  >([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
 
@@ -413,13 +598,24 @@ const App: React.FC = () => {
           id: g.group_id,
           kind: "group" as ThreadKind,
           title: g.title || "未命名群",
-          subtitle: `成員 ${g.member_count || 0}`,
+          subtitle: `成员 ${g.member_count || 0}`,
           lastMessage: g.last_message?.plaintext || "",
           lastTime: relativeTime(g.last_message_at || g.updated_at),
           unread: 0
+        })),
+        ...meshGroups.map(mg => ({
+          id: mg.threadId,
+          kind: "meshserver_group" as ThreadKind,
+          title: mg.title,
+          subtitle: "中心化群",
+          lastMessage: "",
+          lastTime: "",
+          unread: 0,
+          connectionName: mg.connectionName,
+          myUserId: mg.myUserId
         }))
       ],
-    [conversations, groups, contactsRaw, contactAvatarMap]
+    [conversations, groups, meshGroups, contactsRaw, contactAvatarMap]
   );
 
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -445,8 +641,29 @@ const App: React.FC = () => {
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [addFriendOpen, setAddFriendOpen] = useState(false);
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
+  const [meshJoinOpen, setMeshJoinOpen] = useState(false);
+  const [meshJoinStep, setMeshJoinStep] = useState<"peer" | "server" | "channel">("peer");
+  const [meshPeerIdDraft, setMeshPeerIdDraft] = useState("");
+  const [meshConnection, setMeshConnection] = useState<MeshserverConnectionRaw | null>(null);
+  const [meshServers, setMeshServers] = useState<MeshserverServerRaw[]>([]);
+  const [meshChannels, setMeshChannels] = useState<MeshserverChannelRaw[]>([]);
+  const [meshSelectedSpaceId, setMeshSelectedSpaceId] = useState<string>("");
+  const [meshMyPermissions, setMeshMyPermissions] = useState<{
+    can_create_channel?: boolean;
+  } | null>(null);
+  const [meshCanCreateSpace, setMeshCanCreateSpace] = useState<boolean | null>(null);
+  const [meshCreateSpaceName, setMeshCreateSpaceName] = useState("");
+  const [meshCreateSpaceDesc, setMeshCreateSpaceDesc] = useState("");
+  const [meshCreateSpaceVisibility, setMeshCreateSpaceVisibility] = useState<"public" | "private">(
+    "public"
+  );
+  const [meshCreateChannelType, setMeshCreateChannelType] = useState<1 | 2>(1);
+  const [meshCreateChannelName, setMeshCreateChannelName] = useState("");
+  const [meshCreateChannelDesc, setMeshCreateChannelDesc] = useState("");
+  const [meshCreateChannelVisibility, setMeshCreateChannelVisibility] = useState<"public" | "private">("public");
+  const [meshCreateChannelSlowModeSeconds, setMeshCreateChannelSlowModeSeconds] = useState<number>(0);
   const [addFriendPeerId, setAddFriendPeerId] = useState("");
-  const [addFriendIntro, setAddFriendIntro] = useState("你好，我想和你開始聊天。");
+  const [addFriendIntro, setAddFriendIntro] = useState("你好，我想和你开始聊天。");
   const [createGroupTitle, setCreateGroupTitle] = useState("");
   const [createGroupMemberIds, setCreateGroupMemberIds] = useState<Set<string>>(
     new Set()
@@ -454,7 +671,14 @@ const App: React.FC = () => {
   const [createGroupMemberQuery, setCreateGroupMemberQuery] = useState("");
   const [actionBusy, setActionBusy] = useState<null | string>(null);
 
-  // 自動刪除（retention）選擇彈窗
+  // 群资料（管理员可改名/解散/邀请）
+  const [groupProfileOpen, setGroupProfileOpen] = useState(false);
+  const [groupTitleDraft, setGroupTitleDraft] = useState("");
+  const [groupInviteQuery, setGroupInviteQuery] = useState("");
+  const [groupInviteIds, setGroupInviteIds] = useState<Set<string>>(new Set());
+  const [groupDissolveReason, setGroupDissolveReason] = useState("");
+
+  // 自动删除（retention）选择弹窗
   const [retentionModalOpen, setRetentionModalOpen] = useState(false);
   const [retentionUnit, setRetentionUnit] = useState<
     "month" | "week" | "day" | "hour" | "off"
@@ -549,7 +773,7 @@ const App: React.FC = () => {
     const s = (src || "").trim();
     if (!s) return undefined;
     if (badAvatarUrls.has(s)) return undefined;
-    // 只有成功載入過的圖片才交給 Avatar，避免 broken 圖示
+    // 只有成功载入过的图片才交给 Avatar，避免 broken 图示
     return goodAvatarUrls.has(s) ? s : undefined;
   };
 
@@ -564,11 +788,12 @@ const App: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const [meRes, contactsRes, convs, grps] = await Promise.all([
+        const [meRes, contactsRes, convs, grps, requestsRes] = await Promise.all([
           get<Me>("/api/v1/chat/me"),
           get<ContactRaw[]>("/api/v1/chat/contacts"),
           get<ConversationRaw[]>("/api/v1/chat/conversations"),
-          get<GroupRaw[]>("/api/v1/groups")
+          get<GroupRaw[]>("/api/v1/groups"),
+          get<FriendRequestRaw[]>("/api/v1/chat/requests")
         ]);
         setMe(meRes || null);
         setMeNicknameDraft(meRes?.nickname || "");
@@ -578,6 +803,7 @@ const App: React.FC = () => {
           normalizeEntityList<ConversationRaw>(convs, ["conversations"])
         );
         setGroups(normalizeEntityList<GroupRaw>(grps, ["groups"]));
+        setRequestsRaw(normalizeEntityList<FriendRequestRaw>(requestsRes, ["requests"]));
 
         if (Array.isArray(contactsRes) && contactsRes.length > 0) {
           setSelectedContactId(contactsRes[0].peer_id);
@@ -589,8 +815,73 @@ const App: React.FC = () => {
           setSelectedThreadId(grps[0].group_id);
           setSelectedThreadKind("group");
         }
+
+        // meshserver：开机自动拉取已加入的频道，用于会话列表展示
+        try {
+          const connResp = await get<any>("/api/v1/meshserver/connections").catch(() => null);
+          const connections: any[] = Array.isArray(connResp?.connections) ? connResp.connections : [];
+          const activeConn = connections[0] || null;
+          const connectionName: string | undefined = activeConn?.name;
+          const myUserId: string | undefined = activeConn?.user_id;
+
+          if (connectionName) {
+            const q = `?connection=${encodeURIComponent(connectionName)}`;
+
+            // 1) 先读取用户加入的 space 列表（文档：my_servers）
+            const myServersResp = await get<any>(
+              `/api/v1/meshserver/my_servers${q}`
+            ).catch(() => null);
+
+            const myServers: any[] = Array.isArray(myServersResp?.servers)
+              ? myServersResp.servers
+              : [];
+
+            const spaceIds = myServers
+              .map(e => e?.space?.space_id || e?.space_id || e?.server_id || "")
+              .filter(Boolean);
+
+            // 2) 再读取每个 space 下当前用户加入的 group（文档：my_groups）
+            const nextThreads: MeshserverGroupThread[] = [];
+
+            for (const spaceId of spaceIds) {
+              const groupsResp = await get<any>(
+                `/api/v1/meshserver/spaces/${encodeURIComponent(spaceId)}/my_groups${q}`
+              ).catch(() => null);
+
+              const groups = normalizeEntityList<any>(groupsResp, ["groups"]);
+
+              for (const g of groups) {
+                const channelId =
+                  g?.channel_id || g?.channelId || g?.id || "";
+                if (!channelId) continue;
+                if ((g as any)?.can_view === false) continue;
+                nextThreads.push({
+                  kind: "meshserver_group",
+                  threadId: channelId,
+                  channel_id: channelId,
+                  server_id: spaceId,
+                  title: g?.name || "未命名群",
+                  subtitle: "中心化群",
+                  connectionName,
+                  myUserId
+                });
+              }
+            }
+
+            if (nextThreads.length) {
+              setMeshGroups(prev => {
+                const map = new Map(prev.map(t => [t.threadId, t]));
+                for (const t of nextThreads) map.set(t.threadId, t);
+                return Array.from(map.values());
+              });
+            }
+          }
+        } catch (meshErr) {
+          // 非关键：meshserver 异常不影响原聊天
+          console.error("meshserver 初始化失败:", meshErr);
+        }
       } catch (err) {
-        console.error("初始化失敗:", err);
+        console.error("初始化失败:", err);
       }
     })();
   }, []);
@@ -619,7 +910,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!isMobile) return;
-    // 手機端：沒有選中會話時回到列表；選中後默認進聊天頁
+    // 手机端：没有选中会话时回到列表；选中后默认进聊天页
     if (!selectedThreadId) {
       setMobileView("list");
     }
@@ -672,7 +963,7 @@ const App: React.FC = () => {
       try {
         setMessagesLoading(true);
         if (kind === "group") {
-          // 同步拉取群詳細資料，用於權限（admin 可撤回所有人）
+          // 同步拉取群详细资料，用于权限（admin 可撤回所有人）
           const details = await get<GroupDetails>(
             `/api/v1/groups/${encodeURIComponent(id)}`
           ).catch(() => null);
@@ -681,6 +972,25 @@ const App: React.FC = () => {
             `/api/v1/groups/${encodeURIComponent(id)}/messages`
           );
           setMessages(normalizeList<GroupMessage>(resp));
+        } else if (kind === "meshserver_group") {
+          setSelectedGroupDetails(null);
+          const thread = meshGroups.find(t => t.threadId === id) || null;
+          const connectionName = thread?.connectionName;
+          if (!thread || !connectionName) {
+            setMessages([]);
+            return;
+          }
+
+          const resp = await get<any>(
+            `/api/v1/meshserver/channels/${encodeURIComponent(
+              id
+            )}/sync?connection=${encodeURIComponent(
+              connectionName
+            )}&after_seq=0&limit=200`
+          ).catch(() => ({ messages: [] }));
+
+          const list = Array.isArray(resp?.messages) ? resp.messages : [];
+          setMessages(list as MeshserverSyncMessage[]);
         } else {
           setSelectedGroupDetails(null);
           const resp = await get<any>(
@@ -689,13 +999,13 @@ const App: React.FC = () => {
           setMessages(normalizeList<DirectMessage>(resp));
         }
       } catch (err) {
-        console.error("載入訊息失敗:", err);
+        console.error("载入讯息失败:", err);
         setMessages([]);
       } finally {
         setMessagesLoading(false);
       }
     },
-    []
+    [meshGroups]
   );
 
   useEffect(() => {
@@ -710,7 +1020,25 @@ const App: React.FC = () => {
     if (!text.trim() || !selectedThreadId) return;
     setSending(true);
     try {
-      if (selectedThreadKind === "group") {
+      if (selectedThreadKind === "meshserver_group") {
+        const thread = meshGroups.find(t => t.threadId === selectedThreadId) || null;
+        const connectionName = thread?.connectionName;
+        if (!thread || !connectionName) {
+          alert("未找到 meshserver 频道上下文");
+          return;
+        }
+        await post(
+          `/api/v1/meshserver/channels/${encodeURIComponent(
+            selectedThreadId
+          )}/messages?connection=${encodeURIComponent(connectionName)}`,
+          {
+            client_msg_id: `local-${Date.now()}`,
+            message_type: "text",
+            text
+          }
+        );
+        await loadThreadMessages("meshserver_group", selectedThreadId);
+      } else if (selectedThreadKind === "group") {
         await post(`/api/v1/groups/${encodeURIComponent(selectedThreadId)}/messages`, {
           text
         });
@@ -741,8 +1069,8 @@ const App: React.FC = () => {
         setConversations(Array.isArray(convs) ? convs : []);
       }
     } catch (err: any) {
-      console.error("發送訊息失敗:", err);
-      alert("發送失敗：" + (err?.message || String(err)));
+      console.error("发送讯息失败:", err);
+      alert("发送失败：" + (err?.message || String(err)));
     } finally {
       setSending(false);
     }
@@ -750,8 +1078,32 @@ const App: React.FC = () => {
 
   const sendFileForCurrentThread = async (file: File) => {
     if (!selectedThreadId) return;
-    setFileSending({ text: `上傳中：${file.name}` });
+    setFileSending({ text: `上传中：${file.name}` });
     try {
+      if (selectedThreadKind === "meshserver_group") {
+        const thread = meshGroups.find(t => t.threadId === selectedThreadId) || null;
+        const connectionName = thread?.connectionName;
+        if (!connectionName) {
+          throw new Error("未找到 meshserver 频道上下文（connectionName）");
+        }
+
+        const form = new FormData();
+        // 文档：/messages/image 接受字段 image（或 file）
+        form.append("image", file);
+
+        const url = `/api/v1/meshserver/channels/${encodeURIComponent(
+          selectedThreadId
+        )}/messages/image?connection=${encodeURIComponent(connectionName)}`;
+
+        const resp = await fetch(api(url), { method: "POST", body: form });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error((data as any).error || resp.statusText);
+
+        setFileSending(null);
+        await loadThreadMessages("meshserver_group", selectedThreadId);
+        return;
+      }
+
       const form = new FormData();
       form.append("file", file);
       const path =
@@ -777,15 +1129,15 @@ const App: React.FC = () => {
         );
       }
     } catch (err: any) {
-      console.error("發送文件失敗:", err);
-      setFileSending({ text: `發送文件失敗：${err?.message || String(err)}`, error: true });
+      console.error("发送文件失败:", err);
+      setFileSending({ text: `发送文件失败：${err?.message || String(err)}`, error: true });
       setTimeout(() => setFileSending(null), 3500);
     }
   };
 
   const revokeDirectMessage = async (conversationId: string, msgId: string) => {
     if (!conversationId || !msgId) return;
-    if (!window.confirm("確認撤回這條消息嗎？撤回後雙方都會刪除這條消息。")) return;
+    if (!window.confirm("确认撤回这条消息吗？撤回后双方都会删除这条消息。")) return;
     try {
       await post(
         `/api/v1/chat/conversations/${encodeURIComponent(
@@ -796,14 +1148,14 @@ const App: React.FC = () => {
       const convs = await get<ConversationRaw[]>("/api/v1/chat/conversations");
       setConversations(Array.isArray(convs) ? convs : []);
     } catch (err: any) {
-      console.error("撤回失敗:", err);
-      alert("撤回失敗：" + (err?.message || String(err)));
+      console.error("撤回失败:", err);
+      alert("撤回失败：" + (err?.message || String(err)));
     }
   };
 
   const revokeGroupMessage = async (groupId: string, msgId: string) => {
     if (!groupId || !msgId) return;
-    if (!window.confirm("確認撤回這條群消息嗎？")) return;
+    if (!window.confirm("确认撤回这条群消息吗？")) return;
     try {
       await post(
         `/api/v1/groups/${encodeURIComponent(groupId)}/messages/${encodeURIComponent(
@@ -814,8 +1166,8 @@ const App: React.FC = () => {
       const grps = await get<GroupRaw[]>("/api/v1/groups");
       setGroups(normalizeEntityList<GroupRaw>(grps, ["groups"]));
     } catch (err: any) {
-      console.error("群消息撤回失敗:", err);
-      alert("撤回失敗：" + (err?.message || String(err)));
+      console.error("群消息撤回失败:", err);
+      alert("撤回失败：" + (err?.message || String(err)));
     }
   };
 
@@ -884,7 +1236,7 @@ const App: React.FC = () => {
       return {
         onPointerDown: (e) => {
           if (!enabled) return;
-          if (e.pointerType === "mouse") return; // 滑鼠用右鍵
+          if (e.pointerType === "mouse") return; // 滑鼠用右键
           startX = e.clientX;
           startY = e.clientY;
           clear();
@@ -945,9 +1297,9 @@ const App: React.FC = () => {
       });
       setAddFriendOpen(false);
       setPlusMenuOpen(false);
-      alert("好友請求已發送");
+      alert("好友请求已发送");
     } catch (err: any) {
-      alert("發送好友請求失敗：" + (err?.message || String(err)));
+      alert("发送好友请求失败：" + (err?.message || String(err)));
     } finally {
       setActionBusy(null);
     }
@@ -957,7 +1309,7 @@ const App: React.FC = () => {
     const title = createGroupTitle.trim();
     const members = Array.from(createGroupMemberIds);
     if (!title) {
-      alert("群標題不能為空");
+      alert("群标题不能为空");
       return;
     }
     setActionBusy("createGroup");
@@ -978,7 +1330,347 @@ const App: React.FC = () => {
       }
       alert("群聊已建立");
     } catch (err: any) {
-      alert("建立群聊失敗：" + (err?.message || String(err)));
+      alert("建立群聊失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const openMeshJoin = () => {
+    setPlusMenuOpen(false);
+    setMeshJoinOpen(true);
+    setMeshJoinStep("peer");
+    setMeshPeerIdDraft("");
+    setMeshConnection(null);
+    setMeshServers([]);
+    setMeshChannels([]);
+    setMeshSelectedSpaceId("");
+    setMeshMyPermissions(null);
+    setMeshCanCreateSpace(null);
+    setMeshCreateSpaceName("");
+    setMeshCreateSpaceDesc("");
+    setMeshCreateSpaceVisibility("public");
+    setMeshCreateChannelType(1);
+    setMeshCreateChannelName("");
+    setMeshCreateChannelDesc("");
+    setMeshCreateChannelVisibility("public");
+    setMeshCreateChannelSlowModeSeconds(0);
+  };
+
+  const connectMeshserver = async (peerId: string) => {
+    const id = peerId.trim();
+    if (!id) throw new Error("meshserver peer_id 不能为空");
+    const resp = await post<any>(`/api/v1/meshserver/connections`, {
+      peer_id: id,
+      client_agent: "meshproxy-client",
+      protocol_id: "/meshserver/session/1.0.0"
+    });
+    const conn = resp?.connection as MeshserverConnectionRaw | undefined;
+    if (!conn?.name) throw new Error("连接 meshserver 失败：connection.name 缺失");
+    return conn;
+  };
+
+  const loadSpaces = async (connectionName: string) => {
+    const resp = await get<any>(
+      `/api/v1/meshserver/spaces?connection=${encodeURIComponent(connectionName)}`
+    ).catch(() => ({}));
+
+    // 只读取 resp.spaces；仍保留“包裹层级变化”（items/data/results 等）解析。
+    let list: any[] = [];
+    const spacesVal = resp?.spaces;
+    const dataSpacesVal = resp?.data?.spaces;
+    const resultSpacesVal = resp?.result?.spaces;
+
+    const extractList = (v: any): any[] => {
+      if (Array.isArray(v)) return v;
+      if (!v || typeof v !== "object") return [];
+      if (Array.isArray(v.items)) return v.items;
+      if (Array.isArray(v.data)) return v.data;
+      if (Array.isArray(v.results)) return v.results;
+      if (Array.isArray(v.list)) return v.list;
+      if (Array.isArray(v.rows)) return v.rows;
+      if (Array.isArray(v.entries)) return v.entries;
+      if (Array.isArray(v.records)) return v.records;
+      if (Array.isArray(v.page?.items)) return v.page.items;
+      if (Array.isArray(v.spaces)) return v.spaces;
+      // 最後兜底：找对象里“第一個陣列”
+      for (const k of Object.keys(v)) {
+        const vv = (v as any)[k];
+        if (Array.isArray(vv)) return vv;
+      }
+      return [];
+    };
+
+    list = extractList(spacesVal);
+    if (!list.length) list = extractList(dataSpacesVal);
+    if (!list.length) list = extractList(resultSpacesVal);
+    if (!list.length) list = extractList(resp?.items);
+    if (!list.length) list = normalizeEntityList<any>(resp, ["spaces"]);
+
+    const mapped = (Array.isArray(list) ? list : []).map(item => {
+      // item 可能是：{space:{...}} / {server:{...}} / {...}（直接就是 space）
+      const spaceObj = (item && (item.space || item.server)) || item || {};
+
+      // 你的后端现在统一使用 `id` 作为 space 标识
+      const spaceId =
+        spaceObj?.id ??
+        spaceObj?.space_id ??
+        spaceObj?.spaceId ??
+        spaceObj?.spaceID ??
+        spaceObj?.space_uuid ??
+        spaceObj?.spaceUuid ??
+        item?.id ??
+        item?.space_id ??
+        item?.spaceId ??
+        item?.spaceID ??
+        spaceObj?.server_id ??
+        spaceObj?.serverId ??
+        item?.server_id ??
+        item?.serverId ??
+        "";
+
+      const name =
+        spaceObj?.name ??
+        spaceObj?.title ??
+        spaceObj?.space_name ??
+        spaceObj?.spaceName ??
+        item?.name ??
+        item?.title ??
+        "";
+
+      return {
+        // 注意：spaceId 可能是數字 0；不能用 `|| ""` 否則會被當成 false 變成空字串
+        id: String(spaceId ?? ""),
+        name: String(name || ""),
+        avatar_url:
+          spaceObj?.avatar_url ?? spaceObj?.avatarUrl ?? spaceObj?.avatar ?? item?.avatar_url,
+        description: spaceObj?.description ?? spaceObj?.desc ?? "",
+        visibility: spaceObj?.visibility ?? spaceObj?.public ?? spaceObj?.is_public,
+        member_count:
+          spaceObj?.member_count ??
+          spaceObj?.memberCount ??
+          spaceObj?.members_count ??
+          spaceObj?.membersCount,
+        allow_channel_creation:
+          spaceObj?.allow_channel_creation ??
+          spaceObj?.allowChannelCreation ??
+          spaceObj?.can_create_channel ??
+          item?.allow_channel_creation
+      } as MeshserverServerRaw;
+    });
+
+    setMeshServers(mapped.filter(s => (s.id ?? "") !== ""));
+  };
+
+  const loadMeshChannels = async (serverId: string, connectionName: string) => {
+    const resp = await get<any>(
+      `/api/v1/meshserver/spaces/${encodeURIComponent(serverId)}/channels?connection=${encodeURIComponent(connectionName)}`
+    ).catch(() => ({}));
+    setMeshChannels(normalizeEntityList<MeshserverChannelRaw>(resp, ["channels"]));
+  };
+
+  const loadMeshMyPermissions = async (serverId: string, connectionName: string) => {
+    const resp = await get<any>(
+      `/api/v1/meshserver/spaces/${encodeURIComponent(
+        serverId
+      )}/my_permissions?connection=${encodeURIComponent(connectionName)}`
+    ).catch(() => null);
+    setMeshMyPermissions(resp && typeof resp === "object" ? resp : null);
+  };
+
+  const loadMeshCanCreateSpace = async (connectionName: string) => {
+    // 目前文档未覆盖 can_create_space 的字段名；这里做兼容解析。
+    // 先读 my_servers（响应结构：{ servers: [{ space: {...}, role: ... }] }）
+    const resp = await get<any>(
+      `/api/v1/meshserver/my_servers?connection=${encodeURIComponent(connectionName)}`
+    ).catch(() => null);
+
+    const direct =
+      resp?.can_create_space ??
+      resp?.canCreateSpace ??
+      resp?.permissions?.can_create_space ??
+      resp?.permissions?.canCreateSpace;
+
+    const servers: any[] = Array.isArray(resp?.servers) ? resp.servers : [];
+    const nested = servers.some(s => {
+      const v =
+        s?.can_create_space ??
+        s?.canCreateSpace ??
+        s?.permissions?.can_create_space ??
+        s?.permissions?.canCreateSpace ??
+        s?.space?.can_create_space ??
+        s?.space?.canCreateSpace ??
+        s?.space?.allow_space_creation ??
+        s?.space?.allowSpaceCreation;
+      return !!v;
+    });
+
+    setMeshCanCreateSpace(Boolean(direct || nested));
+  };
+
+  const joinMeshChannel = async (channel: MeshserverChannelRaw) => {
+    if (!meshConnection) return;
+    const anyCh = channel as any;
+    const channelId: string | undefined =
+      anyCh?.channel_id || anyCh?.channelId || anyCh?.id;
+    if (!channelId) return;
+    const serverId: string | undefined = anyCh?.server_id || anyCh?.serverId;
+    const channelName: string | undefined = anyCh?.name || anyCh?.title;
+    const channelType: number = Number(anyCh?.type);
+    setActionBusy("meshJoin");
+    try {
+      await post(
+        `/api/v1/meshserver/channels/${encodeURIComponent(channelId)}/join?connection=${encodeURIComponent(meshConnection.name)}`,
+        { last_seen_seq: 0 }
+      );
+
+      setMeshGroups(prev => {
+        const exists = prev.some(t => t.threadId === channelId);
+        if (exists) return prev;
+        const next: MeshserverGroupThread = {
+          kind: "meshserver_group",
+          threadId: channelId,
+          channel_id: channelId,
+          server_id: serverId || "",
+          title: channelName || "未命名频道",
+          subtitle: channelType === 2 ? "中心化广播" : "中心化群",
+          connectionName: meshConnection.name,
+          myUserId: meshConnection.user_id
+        };
+        return [next, ...prev];
+      });
+
+      // 跳转聊天页
+      setSelectedThreadKind("meshserver_group");
+      setSelectedThreadId(channelId);
+      setActiveTab("chat");
+      setMeshJoinOpen(false);
+      setMeshJoinStep("peer");
+      if (isMobile) setMobileView("chat");
+    } catch (err: any) {
+      alert("加入群聊失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const createMeshChannelAndMaybeJoin = async () => {
+    if (!meshConnection) return;
+    if (!meshSelectedSpaceId) return;
+    const name = meshCreateChannelName.trim();
+    if (!name) {
+      alert("频道名称不能为空");
+      return;
+    }
+
+    const description = meshCreateChannelDesc.trim();
+    const slowMode = Number.isFinite(meshCreateChannelSlowModeSeconds)
+      ? Math.max(0, Math.floor(meshCreateChannelSlowModeSeconds))
+      : 0;
+
+    setActionBusy("meshCreateChannel");
+    try {
+      const connectionName = meshConnection.name;
+      const serverId = meshSelectedSpaceId;
+
+      const resp = await (meshCreateChannelType === 1
+        ? post<any>(
+            `/api/v1/meshserver/spaces/${encodeURIComponent(
+              serverId
+            )}/groups?connection=${encodeURIComponent(connectionName)}`,
+            {
+              name,
+              description,
+              visibility: meshCreateChannelVisibility,
+              slow_mode_seconds: slowMode
+            }
+          )
+        : post<any>(
+            `/api/v1/meshserver/spaces/${encodeURIComponent(
+              serverId
+            )}/channels?connection=${encodeURIComponent(connectionName)}`,
+            {
+              name,
+              description,
+              visibility: meshCreateChannelVisibility,
+              slow_mode_seconds: slowMode
+            }
+          ));
+
+      const createdChannelId =
+        resp?.channel_id ||
+        resp?.channel?.channel_id ||
+        resp?.channel?.id ||
+        "";
+
+      if (!createdChannelId) {
+        alert("创建成功但未返回 channel_id");
+        // 至少刷新列表
+        await loadMeshChannels(serverId, connectionName);
+        return;
+      }
+
+      // 创建后直接加入
+      await joinMeshChannel({
+        channel_id: createdChannelId,
+        server_id: resp?.channel?.server_id || serverId,
+        type: meshCreateChannelType,
+        name: resp?.channel?.name || name
+      } as any);
+    } catch (err: any) {
+      alert("创建频道失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const createMeshSpaceAndMaybeSelect = async () => {
+    if (!meshConnection) return;
+    const name = meshCreateSpaceName.trim();
+    if (!name) {
+      alert("space 名称不能为空");
+      return;
+    }
+
+    setActionBusy("meshCreateSpace");
+    try {
+      const description = meshCreateSpaceDesc.trim();
+      const payload = {
+        name,
+        description,
+        visibility: meshCreateSpaceVisibility
+      };
+
+      // 这里的创建接口在文档中未出现；按约定使用 /meshserver/spaces。
+      const resp = await post<any>(
+        `/api/v1/meshserver/spaces?connection=${encodeURIComponent(
+          meshConnection.name
+        )}`,
+        payload
+      );
+
+      const createdSpaceId =
+        resp?.space_id ||
+        resp?.server_id ||
+        resp?.space?.space_id ||
+        resp?.server?.server_id ||
+        "";
+
+      if (!createdSpaceId) {
+        // 至少刷新列表
+        await loadSpaces(meshConnection.name);
+        alert("创建 space 成功，但未返回 space_id");
+        return;
+      }
+
+      await loadSpaces(meshConnection.name);
+      setMeshSelectedSpaceId(createdSpaceId);
+
+      await loadMeshChannels(createdSpaceId, meshConnection.name);
+      await loadMeshMyPermissions(createdSpaceId, meshConnection.name);
+      setMeshJoinStep("channel");
+    } catch (err: any) {
+      alert("创建 space 失败：" + (err?.message || String(err)));
     } finally {
       setActionBusy(null);
     }
@@ -1046,7 +1738,26 @@ const App: React.FC = () => {
               textAlign: "left"
             }}
           >
-            發起群聊
+            发起群聊
+          </button>
+          <button
+            type="button"
+            onClick={openMeshJoin}
+            style={{
+              width: "100%",
+              marginTop: 6,
+              padding: "10px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "transparent",
+              color: "#e5e7eb",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 700,
+              textAlign: "left"
+            }}
+          >
+            加入服务器
           </button>
         </div>
       </div>
@@ -1196,8 +1907,8 @@ const App: React.FC = () => {
       await openGroupThread(groupId);
       alert("已加入群聊");
     } catch (err: any) {
-      console.error("加入群聊失敗:", err);
-      alert("加入群聊失敗：" + (err?.message || String(err)));
+      console.error("加入群聊失败:", err);
+      alert("加入群聊失败：" + (err?.message || String(err)));
     }
   };
 
@@ -1210,8 +1921,8 @@ const App: React.FC = () => {
         nickname: remark
       });
     } catch (err: any) {
-      console.error("保存備註失敗:", err);
-      alert("保存備註失敗：" + (err?.message || String(err)));
+      console.error("保存备注失败:", err);
+      alert("保存备注失败：" + (err?.message || String(err)));
     }
   };
 
@@ -1235,8 +1946,8 @@ const App: React.FC = () => {
         blocked
       });
     } catch (err: any) {
-      console.error("更新拉黑狀態失敗:", err);
-      alert("更新拉黑狀態失敗：" + (err?.message || String(err)));
+      console.error("更新拉黑状态失败:", err);
+      alert("更新拉黑状态失败：" + (err?.message || String(err)));
     }
   };
 
@@ -1251,9 +1962,160 @@ const App: React.FC = () => {
     try {
       await post(`/api/v1/chat/peers/${encodeURIComponent(peerId)}/connect`);
     } catch (err) {
-      console.warn("connect 失敗，可忽略:", err);
+      console.warn("connect 失败，可忽略:", err);
     }
-    alert("暫未找到現成會話，請在原頁面發起聊天請求或等待對方同意。");
+    alert("暂未找到现成会话，请在原页面发起聊天请求或等待对方同意。");
+  };
+
+  const handleAcceptFriendRequest = async (req: FriendRequestRaw) => {
+    if (!req?.request_id) return;
+    const reqId = req.request_id;
+    const peerId = req.from_peer_id || "";
+    setActionBusy("acceptRequest");
+    try {
+      await post(`/api/v1/chat/requests/${encodeURIComponent(reqId)}/accept`, {});
+
+      // 刷新：请求箱、联系人、会话列表
+      const [nextReqs, nextContacts, nextConvs] = await Promise.all([
+        get<FriendRequestRaw[]>("/api/v1/chat/requests").catch(() => []),
+        get<ContactRaw[]>("/api/v1/chat/contacts").catch(() => []),
+        get<ConversationRaw[]>("/api/v1/chat/conversations").catch(() => [])
+      ]);
+
+      setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
+      setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
+      setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
+
+      if (peerId) {
+        const existing = Array.isArray(nextConvs)
+          ? nextConvs.find(c => c.peer_id === peerId)
+          : undefined;
+        if (existing?.conversation_id) {
+          setSelectedThreadId(existing.conversation_id);
+          setSelectedThreadKind("direct");
+          setActiveTab("chat");
+          if (isMobile) setMobileView("chat");
+        } else {
+          await handleStartChatFromContact(peerId);
+        }
+      }
+    } catch (err: any) {
+      alert("接受好友请求失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleRejectFriendRequest = async (req: FriendRequestRaw) => {
+    if (!req?.request_id) return;
+    const reqId = req.request_id;
+    setActionBusy("rejectRequest");
+    try {
+      await post(`/api/v1/chat/requests/${encodeURIComponent(reqId)}/reject`, {});
+      const nextReqs = await get<FriendRequestRaw[]>("/api/v1/chat/requests").catch(() => []);
+      setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
+    } catch (err: any) {
+      alert("拒绝好友请求失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const openGroupProfile = async (groupId: string) => {
+    if (!groupId) return;
+    try {
+      const details = await get<GroupDetails>(`/api/v1/groups/${encodeURIComponent(groupId)}`);
+      setSelectedGroupDetails(details);
+      const title =
+        details?.group?.group_id && selectedGroup?.group_id === groupId
+          ? (selectedGroup?.title || "")
+          : "";
+      // best-effort：以当前 groups 列表为准
+      const g = groups.find(x => x.group_id === groupId);
+      setGroupTitleDraft(g?.title || title || "");
+    } catch (err) {
+      // ignore
+    } finally {
+      setGroupInviteQuery("");
+      setGroupInviteIds(new Set());
+      setGroupDissolveReason("");
+      setGroupProfileOpen(true);
+    }
+  };
+
+  const handleUpdateGroupTitle = async (groupId: string) => {
+    const title = groupTitleDraft.trim();
+    if (!groupId) return;
+    if (!title) {
+      alert("群名称不能为空");
+      return;
+    }
+    setActionBusy("groupTitle");
+    try {
+      await post(`/api/v1/groups/${encodeURIComponent(groupId)}/title`, { title });
+      const grps = await get<GroupRaw[]>("/api/v1/groups");
+      setGroups(normalizeEntityList<GroupRaw>(grps, ["groups"]));
+      const details = await get<GroupDetails>(`/api/v1/groups/${encodeURIComponent(groupId)}`).catch(() => null);
+      if (details) setSelectedGroupDetails(details);
+      alert("群名称已更新");
+    } catch (err: any) {
+      alert("更新群名称失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleInviteGroupMembers = async (groupId: string) => {
+    if (!groupId) return;
+    const ids = Array.from(groupInviteIds);
+    if (ids.length === 0) {
+      alert("请先从好友中选择要邀请的人");
+      return;
+    }
+    setActionBusy("groupInvite");
+    try {
+      for (const peerId of ids) {
+        await post(`/api/v1/groups/${encodeURIComponent(groupId)}/invite`, {
+          peer_id: peerId,
+          role: "member",
+          invite_text: ""
+        });
+      }
+      setGroupInviteIds(new Set());
+      const details = await get<GroupDetails>(`/api/v1/groups/${encodeURIComponent(groupId)}`).catch(() => null);
+      if (details) setSelectedGroupDetails(details);
+      alert("已发送邀请");
+    } catch (err: any) {
+      alert("邀请失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleDissolveGroup = async (groupId: string) => {
+    if (!groupId) return;
+    const ok = window.confirm("确定要解散该群吗？解散后将无法恢复。");
+    if (!ok) return;
+    setActionBusy("groupDissolve");
+    try {
+      await post(`/api/v1/groups/${encodeURIComponent(groupId)}/dissolve`, {
+        reason: groupDissolveReason.trim()
+      });
+      const grps = await get<GroupRaw[]>("/api/v1/groups");
+      setGroups(normalizeEntityList<GroupRaw>(grps, ["groups"]));
+      setGroupProfileOpen(false);
+
+      // 如果当前就在该群会话，退出到列表
+      if (selectedThreadKind === "group" && selectedThreadId === groupId) {
+        setSelectedThreadId(null);
+        if (isMobile) setMobileView("list");
+      }
+      alert("群已解散");
+    } catch (err: any) {
+      alert("解散群失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
   };
 
   const handleSaveMyProfile = async () => {
@@ -1267,8 +2129,8 @@ const App: React.FC = () => {
       setMeBioDraft(updated?.bio || "");
       alert("已更新我的名片");
     } catch (err: any) {
-      console.error("保存名片失敗:", err);
-      alert("保存名片失敗：" + (err?.message || String(err)));
+      console.error("保存名片失败:", err);
+      alert("保存名片失败：" + (err?.message || String(err)));
     }
   };
 
@@ -1402,21 +2264,41 @@ const App: React.FC = () => {
                     ) : null}
                     <div
                       onClick={() => {
-                        if (selectedThread.kind !== "direct") return;
-                        const peerId = (selectedThread as any).peerId as string | undefined;
-                        if (!peerId) return;
-                        setSelectedContactId(peerId);
-                        if (isMobile) setContactsMobileView("detail");
-                        setActiveTab("contacts");
+                        if (selectedThread.kind === "direct") {
+                          const peerId = (selectedThread as any).peerId as
+                            | string
+                            | undefined;
+                          if (!peerId) return;
+                          setSelectedContactId(peerId);
+                          if (isMobile) setContactsMobileView("detail");
+                          setActiveTab("contacts");
+                          return;
+                        }
+                        if (selectedThread.kind === "group") {
+                          openGroupProfile(selectedThread.id);
+                        }
                       }}
                       style={{
                         display: "flex",
                         alignItems: "center",
                         gap: 10,
-                        cursor: selectedThread.kind === "direct" ? "pointer" : "default"
+                        cursor:
+                          selectedThread.kind === "direct" || selectedThread.kind === "group"
+                            ? "pointer"
+                            : "default"
                       }}
-                      title={selectedThread.kind === "direct" ? "查看好友資料" : ""}
-                      role={selectedThread.kind === "direct" ? "button" : undefined}
+                      title={
+                        selectedThread.kind === "direct"
+                          ? "查看好友资料"
+                          : selectedThread.kind === "group"
+                            ? "查看群资料"
+                            : ""
+                      }
+                      role={
+                        selectedThread.kind === "direct" || selectedThread.kind === "group"
+                          ? "button"
+                          : undefined
+                      }
                     >
                       <FallbackAvatar
                         name={selectedThread.title}
@@ -1444,12 +2326,12 @@ const App: React.FC = () => {
                         }}
                         style={{ cursor: "pointer" }}
                       >
-                        自動刪除：
+                        自动删除：
                         {selectedConversation?.retention_minutes
-                          ? `${selectedConversation.retention_minutes} 分鐘`
-                          : "關閉"}
+                          ? `${selectedConversation.retention_minutes} 分钟`
+                          : "关闭"}
                       </div>
-                    ) : (
+                    ) : selectedThreadKind === "group" ? (
                       <div
                         role={localGroupRole === "admin" ? "button" : undefined}
                         tabIndex={localGroupRole === "admin" ? 0 : undefined}
@@ -1466,12 +2348,12 @@ const App: React.FC = () => {
                           opacity: localGroupRole === "admin" ? 1 : 0.6
                         }}
                       >
-                        自動刪除：
+                        自动删除：
                         {selectedGroup?.retention_minutes
-                          ? `${selectedGroup.retention_minutes} 分鐘`
-                          : "關閉"}
+                          ? `${selectedGroup.retention_minutes} 分钟`
+                          : "关闭"}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
@@ -1504,12 +2386,118 @@ const App: React.FC = () => {
                   ) : null}
                 {messagesLoading ? (
                   <div style={{ padding: 12, color: "#9ca3af", fontSize: 13 }}>
-                    載入中…
+                    载入中…
                   </div>
                 ) : messages.length === 0 ? (
                   <div style={{ padding: 12, color: "#9ca3af", fontSize: 13 }}>
-                    暫無消息
+                    暂无消息
                   </div>
+                ) : selectedThreadKind === "meshserver_group" ? (
+                  (messages as MeshserverSyncMessage[]).map(m => {
+                    const thread = meshGroups.find(
+                      t => t.threadId === selectedThreadId
+                    );
+                    const fromMe =
+                      !!thread?.myUserId && m.sender_user_id === thread.myUserId;
+                    const senderName = fromMe ? "我" : m.sender_user_id || "未知";
+                    const letter = textAvatarLetter(senderName);
+                    const isImage = Number((m as any).message_type) === 2;
+                    const caption = m.content?.text || "";
+                    const imageSrc = isImage ? extractMeshserverImageSrc(m) : undefined;
+                    return (
+                      <div
+                        key={m.message_id}
+                        style={{
+                          display: "flex",
+                          justifyContent: fromMe ? "flex-end" : "flex-start",
+                          gap: 8,
+                          marginBottom: 10
+                        }}
+                      >
+                        {!fromMe && (
+                          <div
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: "50%",
+                              background: "#1f2933",
+                              color: "#e5e7eb",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: 13,
+                              flexShrink: 0
+                            }}
+                          >
+                            {letter}
+                          </div>
+                        )}
+                        <div style={{ maxWidth: "78%" }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              opacity: 0.7,
+                              marginBottom: 4,
+                              textAlign: fromMe ? "right" : "left"
+                            }}
+                          >
+                            {senderName} · {formatTimeFromMs(m.created_at_ms)}
+                          </div>
+                          <div
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              background: fromMe
+                                ? "rgba(88,166,255,0.16)"
+                                : "rgba(255,255,255,0.06)",
+                              border: "1px solid rgba(255,255,255,0.10)",
+                              whiteSpace: "pre-wrap",
+                              overflowWrap: "anywhere",
+                              wordBreak: "break-word"
+                            }}
+                          >
+                            {isImage ? (
+                              imageSrc ? (
+                                <div>
+                                  <img
+                                    src={imageSrc}
+                                    alt={caption || "image"}
+                                    style={{
+                                      maxWidth: "100%",
+                                      borderRadius: 10,
+                                      display: "block"
+                                    }}
+                                  />
+                                  {caption ? (
+                                    <div
+                                      style={{
+                                        marginTop: 6,
+                                        fontSize: 12,
+                                        opacity: 0.85,
+                                        whiteSpace: "pre-wrap",
+                                        overflowWrap: "anywhere",
+                                        wordBreak: "break-word"
+                                      }}
+                                    >
+                                      {caption}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : caption ? (
+                                caption
+                              ) : (
+                                "[圖片消息]"
+                              )
+                            ) : caption ? (
+                              caption
+                            ) : (
+                              "[非文本消息]"
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
                 ) : selectedThreadKind === "group" ? (
                   (messages as GroupMessage[]).map(m => {
                     const fromMe = !!me && m.sender_peer_id === me.peer_id;
@@ -1611,7 +2599,7 @@ const App: React.FC = () => {
                                   download={m.file_name || "file"}
                                   style={{ color: "#93c5fd" }}
                                 >
-                                  下載檔案：{m.file_name || "file"}
+                                  下载档案：{m.file_name || "file"}
                                 </a>
                               )
                             ) : text ? (
@@ -1674,10 +2662,10 @@ const App: React.FC = () => {
                             }}
                           >
                             <div style={{ fontSize: 14, fontWeight: 800 }}>
-                              群聊邀請
+                              群聊邀请
                             </div>
                             <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-                              {fromMe ? "你已發送一個群邀請" : "你收到一個群邀請"}
+                              {fromMe ? "你已发送一个群邀请" : "你收到一个群邀请"}
                             </div>
 
                             <div style={{ marginTop: 12 }}>
@@ -1716,7 +2704,7 @@ const App: React.FC = () => {
                                   cursor: "pointer"
                                 }}
                               >
-                                打開群聊
+                                打开群聊
                               </button>
                               <button
                                 type="button"
@@ -1825,7 +2813,7 @@ const App: React.FC = () => {
                                   download={m.file_name || "file"}
                                   style={{ color: "#93c5fd" }}
                                 >
-                                  下載檔案：{m.file_name || "file"}
+                                  下载档案：{m.file_name || "file"}
                                 </a>
                               )
                             ) : text ? (
@@ -1842,7 +2830,7 @@ const App: React.FC = () => {
 
                 {sending ? (
                   <div style={{ padding: 8, color: "#9ca3af", fontSize: 12 }}>
-                    發送中…
+                    发送中…
                   </div>
                 ) : null}
               </div>
@@ -1853,11 +2841,64 @@ const App: React.FC = () => {
                     borderTop: "1px solid rgba(255,255,255,0.08)"
                   }}
                 >
-                  <MessageInput
-                    placeholder="輸入訊息..."
-                    attachButton={false}
-                    onSend={handleSendMessage}
-                  />
+                  {selectedThreadKind === "meshserver_group" ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-end",
+                        gap: 10,
+                        padding: 8
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <MessageInput
+                          placeholder="输入讯息..."
+                          attachButton={false}
+                          onSend={handleSendMessage}
+                        />
+                      </div>
+                      <input
+                        id="meshserver-image-input"
+                        type="file"
+                        accept="image/*"
+                        style={{ display: "none" }}
+                        onChange={e => {
+                          const f = e.target.files && e.target.files[0];
+                          if (!f) return;
+                          sendFileForCurrentThread(f);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const el = document.getElementById(
+                            "meshserver-image-input"
+                          ) as HTMLInputElement | null;
+                          el?.click();
+                        }}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,255,255,0.14)",
+                          background: "transparent",
+                          color: "#e5e7eb",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                          marginBottom: 2,
+                          flexShrink: 0
+                        }}
+                      >
+                        上传图片
+                      </button>
+                    </div>
+                  ) : (
+                    <MessageInput
+                      placeholder="输入讯息..."
+                      attachButton={false}
+                      onSend={handleSendMessage}
+                    />
+                  )}
                 </div>
               </>
             ) : (
@@ -1870,7 +2911,7 @@ const App: React.FC = () => {
                   color: "#888"
                 }}
               >
-                請先從列表選擇一個會話
+                请先从列表选择一个会话
               </div>
             )}
           </div>
@@ -1895,10 +2936,118 @@ const App: React.FC = () => {
   const renderContactsTab = () => (
     <div style={{ height: "100%", display: "flex" }}>
       {(() => {
+        const myPeerId = (me?.peer_id || "").trim();
+        const pendingRequests = requestsRaw.filter(r => {
+          const s = (r.state || "").toLowerCase();
+          const isPending = !s || (s !== "accepted" && s !== "rejected" && s !== "denied");
+          const toPeer = (r.to_peer_id || "").trim();
+          // 只显示“加我”的请求：to_peer_id 必须是我自己
+          const isInbound = !!myPeerId && toPeer === myPeerId;
+          return isPending && isInbound;
+        });
+
         const ContactList = (
           <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "12px 16px", fontWeight: 700 }}>联系人</div>
             <div style={{ flex: 1, overflowY: "auto" }}>
+              <div style={{ padding: "12px 16px 8px", fontWeight: 700 }}>好友添加请求</div>
+              {pendingRequests.length === 0 ? (
+                <div style={{ padding: "0 16px 12px", fontSize: 12, opacity: 0.7 }}>
+                  暂无新的朋友请求
+                </div>
+              ) : (
+                pendingRequests.map(r => {
+                  const peerId = r.from_peer_id || "";
+                  const title = r.nickname || shortPeer(peerId || r.request_id);
+                  return (
+                    <div
+                      key={r.request_id}
+                      style={{
+                        margin: "0 16px 8px",
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        border: "1px solid rgba(255,255,255,0.10)",
+                        background: "rgba(88,166,255,0.06)"
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <FallbackAvatar
+                          name={title}
+                          size="sm"
+                          src={resolveAvatarSrc((r as any).avatar)}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontWeight: 800,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            {title}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              opacity: 0.75,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              marginTop: 2
+                            }}
+                            title={r.intro_text || ""}
+                          >
+                            {r.intro_text ? `申请：${r.intro_text}` : "暂无申请内容"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                        <button
+                          type="button"
+                          disabled={actionBusy === "acceptRequest" || actionBusy === "rejectRequest"}
+                          onClick={() => handleAcceptFriendRequest(r)}
+                          style={{
+                            flex: 1,
+                            padding: "8px 10px",
+                            borderRadius: 10,
+                            border: "none",
+                            background: "#58a6ff",
+                            color: "#08111c",
+                            fontWeight: 900,
+                            cursor:
+                              actionBusy === "acceptRequest" ? "not-allowed" : "pointer",
+                            opacity: actionBusy === "acceptRequest" ? 0.7 : 1
+                          }}
+                        >
+                          {actionBusy === "acceptRequest" ? "接受中…" : "接受"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={actionBusy === "acceptRequest" || actionBusy === "rejectRequest"}
+                          onClick={() => handleRejectFriendRequest(r)}
+                          style={{
+                            flex: 1,
+                            padding: "8px 10px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(255,255,255,0.14)",
+                            background: "transparent",
+                            color: "#e5e7eb",
+                            fontWeight: 800,
+                            cursor:
+                              actionBusy === "rejectRequest" ? "not-allowed" : "pointer",
+                            opacity: actionBusy === "rejectRequest" ? 0.7 : 1
+                          }}
+                        >
+                          {actionBusy === "rejectRequest" ? "拒绝中…" : "拒绝"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+
               {contacts.map(c => (
                 <div
                   key={c.id}
@@ -1940,7 +3089,7 @@ const App: React.FC = () => {
                       )}
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.7 }}>
-                      備註：{c.remark || "（無）"}
+                      备注：{c.remark || "（无）"}
                     </div>
                   </div>
                 </div>
@@ -2017,19 +3166,19 @@ const App: React.FC = () => {
                         wordBreak: "break-word"
                       }}
                     >
-                      簡介：
+                      简介：
                       {(selectedContact as any).bio
                         ? (selectedContact as any).bio
-                        : "（無）"}
+                        : "（无）"}
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
-                      最後上線：{selectedContact.lastSeen || "-"}
+                      最后上线：{selectedContact.lastSeen || "-"}
                     </div>
                   </div>
                 </div>
 
                 <div style={{ marginTop: 24 }}>
-                  <div style={{ fontSize: 14, marginBottom: 4 }}>備註名</div>
+                  <div style={{ fontSize: 14, marginBottom: 4 }}>备注名</div>
                   <input
                     type="text"
                     value={contactRemarkDraft}
@@ -2057,7 +3206,7 @@ const App: React.FC = () => {
                       disabled={contactRemarkSaving}
                       onClick={() => handleSaveContactRemark(selectedContact.id)}
                     >
-                      {contactRemarkSaving ? "保存中…" : "保存備註"}
+                      {contactRemarkSaving ? "保存中…" : "保存备注"}
                     </button>
                   </div>
                 </div>
@@ -2089,7 +3238,7 @@ const App: React.FC = () => {
                     }}
                     onClick={() => handleStartChatFromContact(selectedContact.id)}
                   >
-                    發起對話
+                    发起对话
                   </button>
                 </div>
               </>
@@ -2103,7 +3252,7 @@ const App: React.FC = () => {
                   color: "#888"
                 }}
               >
-                請先選擇一位联系人
+                请先选择一位联系人
               </div>
             )}
           </div>
@@ -2214,18 +3363,18 @@ const App: React.FC = () => {
               wordBreak: "break-word"
             }}
           >
-            簡介：{me?.bio ? me.bio : "（無）"}
+            简介：{me?.bio ? me.bio : "（无）"}
           </div>
         </div>
       </div>
 
       <div style={{ marginTop: 24, maxWidth: 360 }}>
-        <div style={{ fontSize: 14, marginBottom: 4 }}>暱稱</div>
+        <div style={{ fontSize: 14, marginBottom: 4 }}>昵称</div>
         <input
           type="text"
           value={meNicknameDraft}
           onChange={e => setMeNicknameDraft(e.target.value)}
-          placeholder="輸入暱稱"
+          placeholder="输入昵称"
           style={{
             width: "100%",
             padding: "8px 10px",
@@ -2235,11 +3384,11 @@ const App: React.FC = () => {
           }}
         />
 
-        <div style={{ fontSize: 14, marginBottom: 4, marginTop: 14 }}>簡介（bio）</div>
+        <div style={{ fontSize: 14, marginBottom: 4, marginTop: 14 }}>简介（bio）</div>
         <textarea
           value={meBioDraft}
           onChange={e => setMeBioDraft(e.target.value)}
-          placeholder="寫幾句介紹自己（可留空）"
+          placeholder="写几句介绍自己（可留空）"
           style={{
             width: "100%",
             padding: "8px 10px",
@@ -2297,7 +3446,7 @@ const App: React.FC = () => {
           }}
         >
           <div>mesh 聊天</div>
-          {activeTab === "chat" ? (
+          {activeTab !== "me" ? (
             <button
               type="button"
               onClick={() => setPlusMenuOpen(v => !v)}
@@ -2320,6 +3469,32 @@ const App: React.FC = () => {
             </button>
           ) : null}
         </div>
+      ) : null}
+      {isMobile && activeTab === "chat" && mobileView === "chat" ? (
+        <button
+          type="button"
+          onClick={() => setPlusMenuOpen(v => !v)}
+          style={{
+            position: "fixed",
+            top: 10,
+            right: 12,
+            zIndex: 60,
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(15,20,25,0.92)",
+            color: "#e5e7eb",
+            cursor: "pointer",
+            fontSize: 20,
+            lineHeight: "36px",
+            fontWeight: 800
+          }}
+          aria-label="新增"
+          title="新增"
+        >
+          +
+        </button>
       ) : null}
 
       <div style={{ flex: 1, overflow: "hidden" }}>
@@ -2363,7 +3538,7 @@ const App: React.FC = () => {
         "添加朋友",
         <div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
-            輸入對方 Peer ID，發送好友請求後對方接受即可開始私聊。
+            输入对方 Peer ID，发送好友请求后对方接受即可开始私聊。
           </div>
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 13, marginBottom: 6 }}>Peer ID</div>
@@ -2430,7 +3605,7 @@ const App: React.FC = () => {
                 opacity: actionBusy === "addFriend" ? 0.7 : 1
               }}
             >
-              {actionBusy === "addFriend" ? "發送中…" : "發送請求"}
+              {actionBusy === "addFriend" ? "发送中…" : "发送请求"}
             </button>
           </div>
         </div>
@@ -2441,14 +3616,14 @@ const App: React.FC = () => {
           setCreateGroupOpen(false);
           setCreateGroupMemberQuery("");
         },
-        "發起群聊",
+        "发起群聊",
         <div>
           <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 13, marginBottom: 6 }}>群標題</div>
+            <div style={{ fontSize: 13, marginBottom: 6 }}>群标题</div>
             <input
               value={createGroupTitle}
               onChange={e => setCreateGroupTitle(e.target.value)}
-              placeholder="例如：運營群 / 項目群"
+              placeholder="例如：运营群 / 项目群"
               style={{
                 width: "100%",
                 padding: "10px 10px",
@@ -2462,12 +3637,12 @@ const App: React.FC = () => {
           </div>
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 13, marginBottom: 6 }}>
-              初始成員（從好友中選擇）
+              初始成员（从好友中选择）
             </div>
             <input
               value={createGroupMemberQuery}
               onChange={e => setCreateGroupMemberQuery(e.target.value)}
-              placeholder="搜尋好友（暱稱 / Peer ID）"
+              placeholder="搜寻好友（昵称 / Peer ID）"
               style={{
                 width: "100%",
                 padding: "10px 10px",
@@ -2504,7 +3679,7 @@ const App: React.FC = () => {
                         cursor: "pointer",
                         fontSize: 12
                       }}
-                      title="點擊移除"
+                      title="点击移除"
                     >
                       {label} ×
                     </button>
@@ -2518,7 +3693,7 @@ const App: React.FC = () => {
               </div>
             ) : (
               <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-                尚未選擇成員（可不選，先建群後再邀請）
+                尚未选择成员（可不选，先建群后再邀请）
               </div>
             )}
 
@@ -2596,7 +3771,7 @@ const App: React.FC = () => {
                   })}
                 {contacts.length === 0 ? (
                   <div style={{ padding: 12, fontSize: 12, opacity: 0.7 }}>
-                    目前沒有好友可選
+                    目前没有好友可选
                   </div>
                 ) : null}
               </div>
@@ -2638,11 +3813,637 @@ const App: React.FC = () => {
         </div>
       )}
       {renderModal(
+        meshJoinOpen,
+        () => setMeshJoinOpen(false),
+        "加入space",
+        <div>
+          {meshJoinStep === "peer" ? (
+            <>
+              <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+                输入你要连接的 meshserver 的 <code>peer_id</code>，连接成功后会拉取服务器与频道列表。
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>meshserver Peer ID</div>
+                <input
+                  value={meshPeerIdDraft}
+                  onChange={e => setMeshPeerIdDraft(e.target.value)}
+                  placeholder="12D3KooW..."
+                  style={{
+                    width: "100%",
+                    padding: "10px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(0,0,0,0.18)",
+                    color: "#e5e7eb",
+                    outline: "none"
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setMeshJoinOpen(false)}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    background: "transparent",
+                    color: "#e5e7eb",
+                    cursor: "pointer"
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={actionBusy === "meshJoinConnect"}
+                  onClick={async () => {
+                    const peerId = meshPeerIdDraft.trim();
+                    if (!peerId) return;
+                    setActionBusy("meshJoinConnect");
+                    try {
+                      const conn = await connectMeshserver(peerId);
+                      setMeshConnection(conn);
+                      await loadSpaces(conn.name);
+                      await loadMeshCanCreateSpace(conn.name);
+                      setMeshJoinStep("server");
+                    } catch (err: any) {
+                      alert("连接 meshserver 失败：" + (err?.message || String(err)));
+                    } finally {
+                      setActionBusy(null);
+                    }
+                  }}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: "#58a6ff",
+                    color: "#08111c",
+                    fontWeight: 800,
+                    cursor: actionBusy === "meshJoinConnect" ? "not-allowed" : "pointer",
+                    opacity: actionBusy === "meshJoinConnect" ? 0.7 : 1
+                  }}
+                >
+                  {actionBusy === "meshJoinConnect" ? "连接中…" : "连接并选择服务器"}
+                </button>
+              </div>
+            </>
+          ) : null}
+
+          {meshJoinStep === "server" ? (
+            <>
+              <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+                选择space后，会加载该space的频道列表。
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setMeshJoinStep("peer")}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    background: "transparent",
+                    color: "#e5e7eb",
+                    cursor: "pointer"
+                  }}
+                >
+                  返回
+                </button>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  connection：{meshConnection?.name || "-"}
+                </div>
+              </div>
+
+              {meshCanCreateSpace ? (
+                <div
+                  style={{
+                    padding: "12px 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    marginBottom: 10
+                  }}
+                >
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>创建 space</div>
+                  <div style={{ marginBottom: 10, fontSize: 12, opacity: 0.75 }}>
+                    输入名称后会创建并直接进入该 space 的频道选择。
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>名称</div>
+                    <input
+                      value={meshCreateSpaceName}
+                      onChange={e => setMeshCreateSpaceName(e.target.value)}
+                      placeholder="例如：我的 space"
+                      style={{
+                        width: "100%",
+                        padding: "10px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: "rgba(0,0,0,0.18)",
+                        color: "#e5e7eb",
+                        outline: "none"
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>描述（可选）</div>
+                    <textarea
+                      value={meshCreateSpaceDesc}
+                      onChange={e => setMeshCreateSpaceDesc(e.target.value)}
+                      placeholder="一段简短描述"
+                      style={{
+                        width: "100%",
+                        padding: "10px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: "rgba(0,0,0,0.18)",
+                        color: "#e5e7eb",
+                        outline: "none",
+                        minHeight: 70,
+                        resize: "vertical"
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>可见性</div>
+                    <select
+                      value={meshCreateSpaceVisibility}
+                      onChange={e =>
+                        setMeshCreateSpaceVisibility(e.target.value as "public" | "private")
+                      }
+                      style={{
+                        width: "100%",
+                        padding: "10px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: "rgba(0,0,0,0.18)",
+                        color: "#e5e7eb",
+                        outline: "none"
+                      }}
+                    >
+                      <option value="public">public</option>
+                      <option value="private">private</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMeshCreateSpaceName("");
+                        setMeshCreateSpaceDesc("");
+                        setMeshCreateSpaceVisibility("public");
+                      }}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "transparent",
+                        color: "#e5e7eb",
+                        cursor: "pointer"
+                      }}
+                      disabled={actionBusy === "meshCreateSpace"}
+                    >
+                      清空
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={createMeshSpaceAndMaybeSelect}
+                      disabled={actionBusy === "meshCreateSpace"}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: "none",
+                        background: "#58a6ff",
+                        color: "#08111c",
+                        fontWeight: 900,
+                        cursor:
+                          actionBusy === "meshCreateSpace" ? "not-allowed" : "pointer",
+                        opacity: actionBusy === "meshCreateSpace" ? 0.7 : 1
+                      }}
+                    >
+                      {actionBusy === "meshCreateSpace" ? "创建中…" : "创建并选择频道"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.10)", overflow: "hidden" }}>
+                <div style={{ maxHeight: 280, overflowY: "auto" }}>
+                  {meshServers.length === 0 ? (
+                    <div style={{ padding: 12, fontSize: 12, opacity: 0.7 }}>暂无space</div>
+                  ) : (
+                    meshServers.map(s => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={async () => {
+                          if (!meshConnection) return;
+                          setMeshSelectedSpaceId(s.id);
+                          setActionBusy("meshJoinLoadChannels");
+                          try {
+                            await loadMeshChannels(s.id, meshConnection.name);
+                            await loadMeshMyPermissions(s.id, meshConnection.name);
+                            setMeshJoinStep("channel");
+                          } catch (err: any) {
+                            alert("加载频道失败：" + (err?.message || String(err)));
+                          } finally {
+                            setActionBusy(null);
+                          }
+                        }}
+                        style={{
+                          width: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          padding: "12px 12px",
+                          border: "none",
+                          borderBottom: "1px solid rgba(255,255,255,0.06)",
+                          background: "transparent",
+                          color: "#e5e7eb",
+                          cursor: "pointer",
+                          textAlign: "left"
+                        }}
+                      >
+                        <FallbackAvatar
+                          name={s.name || shortPeer(s.id)}
+                          size="sm"
+                          src={resolveAvatarSrc((s.avatar_url || "").trim())}
+                        />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {s.name || "未命名服务器"}
+                          </div>
+                          <div style={{ fontSize: 12, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {s.id} {typeof s.visibility === "number" ? `· visibility:${s.visibility}` : ""}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.7, flexShrink: 0 }}>
+                          {actionBusy === "meshJoinLoadChannels" && meshSelectedSpaceId === s.id ? "加载中…" : "选择"}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </>
+          ) : null}
+
+          {meshJoinStep === "channel" ? (
+            <>
+              <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+                选择一个频道加入（群/广播）。
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setMeshJoinStep("server")}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    background: "transparent",
+                    color: "#e5e7eb",
+                    cursor: "pointer"
+                  }}
+                >
+                  返回
+                </button>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  space：{meshSelectedSpaceId || "-"}
+                </div>
+              </div>
+
+              {meshMyPermissions?.can_create_channel ? (
+                <div
+                  style={{
+                    padding: "12px 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    marginBottom: 10
+                  }}
+                >
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>创建频道</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <button
+                      type="button"
+                      onClick={() => setMeshCreateChannelType(1)}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: meshCreateChannelType === 1 ? "rgba(88,166,255,0.18)" : "transparent",
+                        color: "#e5e7eb",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                        flex: 1
+                      }}
+                    >
+                      群(1)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMeshCreateChannelType(2)}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: meshCreateChannelType === 2 ? "rgba(88,166,255,0.18)" : "transparent",
+                        color: "#e5e7eb",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                        flex: 1
+                      }}
+                    >
+                      广播(2)
+                    </button>
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>名称</div>
+                    <input
+                      value={meshCreateChannelName}
+                      onChange={e => setMeshCreateChannelName(e.target.value)}
+                      placeholder="例如：我的频道"
+                      style={{
+                        width: "100%",
+                        padding: "10px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: "rgba(0,0,0,0.18)",
+                        color: "#e5e7eb",
+                        outline: "none"
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>描述（可选）</div>
+                    <textarea
+                      value={meshCreateChannelDesc}
+                      onChange={e => setMeshCreateChannelDesc(e.target.value)}
+                      placeholder="一段简短描述"
+                      style={{
+                        width: "100%",
+                        padding: "10px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: "rgba(0,0,0,0.18)",
+                        color: "#e5e7eb",
+                        outline: "none",
+                        minHeight: 70,
+                        resize: "vertical"
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>可见性</div>
+                      <select
+                        value={meshCreateChannelVisibility}
+                        onChange={e =>
+                          setMeshCreateChannelVisibility(e.target.value as "public" | "private")
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "10px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "rgba(0,0,0,0.18)",
+                          color: "#e5e7eb",
+                          outline: "none"
+                        }}
+                      >
+                        <option value="public">public</option>
+                        <option value="private">private</option>
+                      </select>
+                    </div>
+                    <div style={{ width: 140 }}>
+                      <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>慢速模式(s)</div>
+                      <input
+                        type="number"
+                        value={meshCreateChannelSlowModeSeconds}
+                        onChange={e => setMeshCreateChannelSlowModeSeconds(Number(e.target.value))}
+                        min={0}
+                        style={{
+                          width: "100%",
+                          padding: "10px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "rgba(0,0,0,0.18)",
+                          color: "#e5e7eb",
+                          outline: "none"
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMeshCreateChannelName("");
+                        setMeshCreateChannelDesc("");
+                        setMeshCreateChannelType(1);
+                        setMeshCreateChannelVisibility("public");
+                        setMeshCreateChannelSlowModeSeconds(0);
+                      }}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "transparent",
+                        color: "#e5e7eb",
+                        cursor: "pointer"
+                      }}
+                      disabled={actionBusy === "meshCreateChannel"}
+                    >
+                      清空
+                    </button>
+                    <button
+                      type="button"
+                      onClick={createMeshChannelAndMaybeJoin}
+                      disabled={actionBusy === "meshCreateChannel"}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: "none",
+                        background: "#58a6ff",
+                        color: "#08111c",
+                        fontWeight: 900,
+                        cursor: actionBusy === "meshCreateChannel" ? "not-allowed" : "pointer",
+                        opacity: actionBusy === "meshCreateChannel" ? 0.7 : 1
+                      }}
+                    >
+                      {actionBusy === "meshCreateChannel" ? "创建中…" : "创建并加入"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.10)", overflow: "hidden" }}>
+                <div style={{ maxHeight: 320, overflowY: "auto" }}>
+                  {meshChannels.length === 0 ? (
+                    <div style={{ padding: 12, fontSize: 12, opacity: 0.7 }}>暂无频道</div>
+                  ) : (
+                    (() => {
+                      const channels = meshChannels.slice();
+                      if (channels.length === 0) {
+                        return (
+                          <div style={{ padding: 12, fontSize: 12, opacity: 0.7 }}>
+                            暂无可显示的频道
+                          </div>
+                        );
+                      }
+                      return channels.map(ch => {
+                        const anyCh = ch as any;
+                        const channelId =
+                          anyCh?.channel_id || anyCh?.channelId || anyCh?.id || "";
+                        const channelType = Number(anyCh?.type);
+                        const typeLabel =
+                          channelType === 1
+                            ? "群(1)"
+                            : channelType === 2
+                              ? "广播(2)"
+                              : `type=${channelType || "-"}`;
+                        return (
+                          <div
+                            key={channelId || (ch as any)?.channel_id}
+                            style={{
+                              padding: "12px 12px",
+                              borderBottom: "1px solid rgba(255,255,255,0.06)",
+                              cursor: "pointer"
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => joinMeshChannel(ch)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") joinMeshChannel(ch);
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 10
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 10,
+                                  minWidth: 0
+                                }}
+                              >
+                                <FallbackAvatar
+                                  name={ch.name || shortPeer(channelId)}
+                                  size="sm"
+                                  src={resolveAvatarSrc(
+                                    (
+                                      meshServers.find(s => s.id === ch.server_id)?.avatar_url ||
+                                      ""
+                                    ).trim()
+                                  )}
+                                />
+                                <div style={{ minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontWeight: 800,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap"
+                                    }}
+                                  >
+                                    {ch.name || "未命名群"}
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      opacity: 0.7,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap"
+                                    }}
+                                  >
+                                    {channelId}
+                                  </div>
+                                </div>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  opacity: 0.85,
+                                  padding: "4px 8px",
+                                  borderRadius: 999,
+                                  border: "1px solid rgba(255,255,255,0.12)",
+                                  flexShrink: 0
+                                }}
+                              >
+                                {typeLabel}
+                              </div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={actionBusy === "meshJoin"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  joinMeshChannel(ch);
+                                }}
+                                style={{
+                                  padding: "8px 12px",
+                                  borderRadius: 10,
+                                  border: "none",
+                                  background: "#58a6ff",
+                                  color: "#08111c",
+                                  fontWeight: 800,
+                                  cursor:
+                                    actionBusy === "meshJoin"
+                                      ? "not-allowed"
+                                      : "pointer",
+                                  opacity: actionBusy === "meshJoin" ? 0.7 : 1,
+                                  flexShrink: 0
+                                }}
+                              >
+                                {actionBusy === "meshJoin" ? "加入中…" : "加入"}
+                              </button>
+                            </div>
+                            {ch.description ? (
+                              <div
+                                style={{
+                                  fontSize: 12,
+                                  opacity: 0.75,
+                                  marginTop: 6,
+                                  whiteSpace: "pre-wrap",
+                                  overflowWrap: "anywhere",
+                                  wordBreak: "break-word"
+                                }}
+                              >
+                                {ch.description}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      });
+                    })()
+                  )}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
+      {renderModal(
         retentionModalOpen,
         () => {
           setRetentionModalOpen(false);
         },
-        "自動刪除時間",
+        "自动删除时间",
         <div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
             选择单位与数量，系统会换算为分钟并保存。
@@ -2747,9 +4548,371 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {(() => {
+        const closeGroupProfile = () => {
+          setGroupProfileOpen(false);
+          setGroupInviteQuery("");
+          setGroupInviteIds(new Set());
+          setGroupDissolveReason("");
+        };
+
+        const groupProfileBody = (
+          <div>
+            {selectedThreadKind === "group" && selectedThreadId ? (
+              <>
+                <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+                  群 ID：<code>{selectedThreadId}</code>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, marginBottom: 6 }}>群名称</div>
+                  <input
+                    value={groupTitleDraft}
+                    onChange={e => setGroupTitleDraft(e.target.value)}
+                    disabled={!(localGroupRole === "admin" || localGroupRole === "controller")}
+                    placeholder="群名称"
+                    style={{
+                      width: "100%",
+                      padding: "10px 10px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.16)",
+                      background: "rgba(0,0,0,0.18)",
+                      color: "#e5e7eb",
+                      outline: "none",
+                      opacity:
+                        localGroupRole === "admin" || localGroupRole === "controller" ? 1 : 0.6
+                    }}
+                  />
+                  {localGroupRole === "admin" || localGroupRole === "controller" ? (
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                      <button
+                        type="button"
+                        disabled={actionBusy === "groupTitle"}
+                        onClick={() => handleUpdateGroupTitle(selectedThreadId)}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          border: "none",
+                          background: "#58a6ff",
+                          color: "#08111c",
+                          fontWeight: 900,
+                          cursor: actionBusy === "groupTitle" ? "not-allowed" : "pointer",
+                          opacity: actionBusy === "groupTitle" ? 0.7 : 1
+                        }}
+                      >
+                        {actionBusy === "groupTitle" ? "保存中…" : "保存群名称"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 8 }}>
+                      你不是管理员，无法修改群名称
+                    </div>
+                  )}
+                </div>
+
+                {localGroupRole === "admin" || localGroupRole === "controller" ? (
+                  <>
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 13, marginBottom: 6 }}>
+                        邀请好友进群（从好友中选择）
+                      </div>
+                      <input
+                        value={groupInviteQuery}
+                        onChange={e => setGroupInviteQuery(e.target.value)}
+                        placeholder="搜寻好友（昵称 / Peer ID）"
+                        style={{
+                          width: "100%",
+                          padding: "10px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "rgba(0,0,0,0.18)",
+                          color: "#e5e7eb",
+                          outline: "none"
+                        }}
+                      />
+
+                      {groupInviteIds.size > 0 ? (
+                        <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {Array.from(groupInviteIds).slice(0, 12).map(peerId => {
+                            const c = contacts.find(x => x.id === peerId);
+                            const label = c ? c.name : shortPeer(peerId);
+                            return (
+                              <button
+                                key={peerId}
+                                type="button"
+                                onClick={() =>
+                                  setGroupInviteIds(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(peerId);
+                                    return next;
+                                  })
+                                }
+                                style={{
+                                  padding: "6px 10px",
+                                  borderRadius: 999,
+                                  border: "1px solid rgba(255,255,255,0.14)",
+                                  background: "rgba(255,255,255,0.06)",
+                                  color: "#e5e7eb",
+                                  cursor: "pointer",
+                                  fontSize: 12
+                                }}
+                                title="点击移除"
+                              >
+                                {label} ×
+                              </button>
+                            );
+                          })}
+                          {groupInviteIds.size > 12 ? (
+                            <div style={{ fontSize: 12, opacity: 0.7, padding: "6px 2px" }}>
+                              +{groupInviteIds.size - 12}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+                          尚未选择要邀请的好友
+                        </div>
+                      )}
+
+                      <div
+                        style={{
+                          marginTop: 10,
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,255,255,0.10)",
+                          overflow: "hidden"
+                        }}
+                      >
+                        <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                          {contacts
+                            .filter(c => {
+                              const q = groupInviteQuery.trim().toLowerCase();
+                              if (!q) return true;
+                              return (
+                                c.name.toLowerCase().includes(q) ||
+                                c.id.toLowerCase().includes(q)
+                              );
+                            })
+                            .map(c => {
+                              const checked = groupInviteIds.has(c.id);
+                              return (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  onClick={() =>
+                                    setGroupInviteIds(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(c.id)) next.delete(c.id);
+                                      else next.add(c.id);
+                                      return next;
+                                    })
+                                  }
+                                  style={{
+                                    width: "100%",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    padding: "10px 12px",
+                                    border: "none",
+                                    borderBottom: "1px solid rgba(255,255,255,0.06)",
+                                    background: checked
+                                      ? "rgba(88,166,255,0.10)"
+                                      : "transparent",
+                                    color: "#e5e7eb",
+                                    cursor: "pointer",
+                                    textAlign: "left"
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      width: 18,
+                                      height: 18,
+                                      borderRadius: 6,
+                                      border: "1px solid rgba(255,255,255,0.18)",
+                                      background: checked ? "#58a6ff" : "transparent",
+                                      flexShrink: 0
+                                    }}
+                                  />
+                                  <FallbackAvatar
+                                    name={c.name}
+                                    size="sm"
+                                    src={resolveAvatarSrc((c as any).avatarUrl)}
+                                  />
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div
+                                      style={{
+                                        fontWeight: 700,
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap"
+                                      }}
+                                    >
+                                      {c.name}
+                                    </div>
+                                    <div
+                                      style={{
+                                        fontSize: 12,
+                                        opacity: 0.7,
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap"
+                                      }}
+                                    >
+                                      {shortPeer(c.id)}
+                                    </div>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          {contacts.length === 0 ? (
+                            <div style={{ padding: 12, fontSize: 12, opacity: 0.7 }}>
+                              目前没有好友可选
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          gap: 10,
+                          marginTop: 12
+                        }}
+                      >
+                        <button
+                          type="button"
+                          disabled={actionBusy === "groupInvite"}
+                          onClick={() => handleInviteGroupMembers(selectedThreadId)}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 10,
+                            border: "none",
+                            background: "#58a6ff",
+                            color: "#08111c",
+                            fontWeight: 900,
+                            cursor: actionBusy === "groupInvite" ? "not-allowed" : "pointer",
+                            opacity: actionBusy === "groupInvite" ? 0.7 : 1
+                          }}
+                        >
+                          {actionBusy === "groupInvite" ? "邀请中…" : "发送邀请"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: 16,
+                        borderTop: "1px solid rgba(255,255,255,0.08)",
+                        paddingTop: 14
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 13,
+                          marginBottom: 6,
+                          color: "#fca5a5",
+                          fontWeight: 900
+                        }}
+                      >
+                        解散群
+                      </div>
+                      <textarea
+                        value={groupDissolveReason}
+                        onChange={e => setGroupDissolveReason(e.target.value)}
+                        placeholder="解散原因（可选）"
+                        style={{
+                          width: "100%",
+                          padding: "10px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "rgba(0,0,0,0.18)",
+                          color: "#e5e7eb",
+                          outline: "none",
+                          minHeight: 70,
+                          resize: "vertical"
+                        }}
+                      />
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                        <button
+                          type="button"
+                          disabled={actionBusy === "groupDissolve"}
+                          onClick={() => handleDissolveGroup(selectedThreadId)}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 10,
+                            border: "none",
+                            background: "#f85149",
+                            color: "#08111c",
+                            fontWeight: 900,
+                            cursor:
+                              actionBusy === "groupDissolve" ? "not-allowed" : "pointer",
+                            opacity: actionBusy === "groupDissolve" ? 0.7 : 1
+                          }}
+                        >
+                          {actionBusy === "groupDissolve" ? "解散中…" : "解散群"}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                请先进入一个群会话再打开群资料。
+              </div>
+            )}
+          </div>
+        );
+
+        if (groupProfileOpen && isMobile) {
+          return (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 10000,
+                background: "rgba(8,17,28,0.98)",
+                display: "flex",
+                flexDirection: "column"
+              }}
+            >
+              <div
+                style={{
+                  padding: "10px 12px",
+                  borderBottom: "1px solid rgba(255,255,255,0.08)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={closeGroupProfile}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "transparent",
+                    color: "#e5e7eb",
+                    cursor: "pointer"
+                  }}
+                >
+                  返回
+                </button>
+                <div style={{ fontWeight: 900 }}>群资料</div>
+              </div>
+              <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+                {groupProfileBody}
+              </div>
+            </div>
+          );
+        }
+
+        return renderModal(groupProfileOpen, closeGroupProfile, "群资料", groupProfileBody);
+      })()}
     </div>
   );
 };
 
 export default App;
-
