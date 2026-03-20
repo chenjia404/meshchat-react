@@ -20,6 +20,13 @@ import {
   peekGroupPreview
 } from "../utils";
 
+/** 後端 unread_count 轉為非負整數 */
+export function coalesceUnreadCount(raw: unknown): number {
+  const x = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(x) || x < 0) return 0;
+  return Math.min(999999, Math.floor(x));
+}
+
 export function buildContactAvatarMap(contactsRaw: ContactRaw[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const c of contactsRaw) {
@@ -67,7 +74,10 @@ export function buildChatThreadListItems(
         lastMessage: peekConversationPreview(
           conv as ConversationRaw & Record<string, unknown>
         ),
-        lastTime: relativeTime(conv.updated_at)
+        lastTime: relativeTime(conv.updated_at),
+        unreadCount: coalesceUnreadCount(
+          (conv as ConversationRaw & Record<string, unknown>).unread_count
+        )
       })),
     ...groups.map(g => ({
       id: g.group_id,

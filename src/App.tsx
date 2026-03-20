@@ -17,7 +17,16 @@ import type {
   GroupDetails,
   WsChatEvent
 } from "./types";
-import { api, get, post, deleteChatResource, avatarUrl, directFileUrl, groupFileUrl } from "./api";
+import {
+  api,
+  get,
+  post,
+  deleteChatResource,
+  avatarUrl,
+  directFileUrl,
+  groupFileUrl,
+  markConversationRead
+} from "./api";
 import {
   normalizeList,
   normalizeEntityList,
@@ -130,10 +139,16 @@ const App: React.FC = () => {
 
   const threadsWithUnread = useMemo(
     () =>
-      threads.map(t => ({
-        ...t,
-        unreadCount: threadUnreadCounts[threadUnreadKey(t.kind, t.id)] ?? 0
-      })),
+      threads.map(t => {
+        if (t.kind === "direct") {
+          return { ...t, unreadCount: t.unreadCount ?? 0 };
+        }
+        const key = threadUnreadKey(t.kind, t.id);
+        return {
+          ...t,
+          unreadCount: threadUnreadCounts[key] ?? 0
+        };
+      }),
     [threads, threadUnreadCounts]
   );
 
@@ -145,6 +160,24 @@ const App: React.FC = () => {
       delete next[key];
       return next;
     });
+    if (kind === "direct") {
+      setConversations(prev =>
+        prev.map(c =>
+          c.conversation_id === threadId ? { ...c, unread_count: 0 } : c
+        )
+      );
+      void markConversationRead(threadId)
+        .then(updated => {
+          setConversations(prev =>
+            prev.map(c =>
+              c.conversation_id === threadId ? { ...c, ...updated } : c
+            )
+          );
+        })
+        .catch(err => {
+          console.warn("标记会话已读失败:", err);
+        });
+    }
   }, []);
 
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -330,11 +363,14 @@ const App: React.FC = () => {
       if (!isSelf) {
         const sel = selectedThreadRef.current;
         if (!(sel.id === id && sel.kind === threadKind)) {
-          const ukey = threadUnreadKey(threadKind, id);
-          setThreadUnreadCounts(prev => ({
-            ...prev,
-            [ukey]: (prev[ukey] || 0) + 1
-          }));
+          // 私聊未讀以 /conversations 的 unread_count 為準，WS 後由 scheduleRefreshConversationList 刷新
+          if (threadKind === "group") {
+            const ukey = threadUnreadKey(threadKind, id);
+            setThreadUnreadCounts(prev => ({
+              ...prev,
+              [ukey]: (prev[ukey] || 0) + 1
+            }));
+          }
         }
       }
 

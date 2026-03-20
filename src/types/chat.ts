@@ -27,6 +27,8 @@ export interface ConversationRaw {
   state?: string;
   updated_at?: string;
   last_message?: { plaintext?: string };
+  /** 未讀條數（/api/v1/chat/conversations） */
+  unread_count?: number;
   retention_minutes?: number;
   /** 最後一次訊息實際傳輸路徑（後端欄位，與 index.html 一致） */
   last_transport_mode?: string;
