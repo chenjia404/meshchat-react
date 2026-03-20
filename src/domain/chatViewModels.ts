@@ -14,7 +14,10 @@ import {
   displayName,
   formatTime,
   relativeTime,
-  shortPeer
+  shortPeer,
+  shortPeerTail,
+  peekConversationPreview,
+  peekGroupPreview
 } from "../utils";
 
 export function buildContactAvatarMap(contactsRaw: ContactRaw[]): Map<string, string> {
@@ -59,9 +62,11 @@ export function buildChatThreadListItems(
         kind: "direct" as ThreadKind,
         peerId: conv.peer_id,
         title: displayName(contactsRaw, conv.peer_id, shortPeer(conv.peer_id)),
-        subtitle: shortPeer(conv.peer_id),
+        subtitle: shortPeerTail(conv.peer_id),
         avatarUrl: contactAvatarMap.get(conv.peer_id),
-        lastMessage: conv.last_message?.plaintext || "",
+        lastMessage: peekConversationPreview(
+          conv as ConversationRaw & Record<string, unknown>
+        ),
         lastTime: relativeTime(conv.updated_at)
       })),
     ...groups.map(g => ({
@@ -69,7 +74,7 @@ export function buildChatThreadListItems(
       kind: "group" as ThreadKind,
       title: g.title || "未命名群",
       subtitle: `成员 ${g.member_count || 0}`,
-      lastMessage: g.last_message?.plaintext || "",
+      lastMessage: peekGroupPreview(g as GroupRaw & Record<string, unknown>),
       lastTime: relativeTime(g.last_message_at || g.updated_at)
     })),
     ...meshGroups.map(mg => ({

@@ -5,11 +5,28 @@ export {
 } from "./normalize";
 export {
   shortPeer,
+  shortPeerTail,
   formatTime,
   formatTimeFromMs,
   relativeTime
 } from "./time";
 export { deliveryStatusText } from "./delivery";
+export {
+  peekLastMessagePlaintext,
+  peekConversationPreview,
+  peekGroupPreview,
+  withOptimisticConversationPreview,
+  withOptimisticGroupPreview,
+  previewFromChatMessage,
+  pickLatestMessage,
+  extractInlinePreviewFromWsPayload,
+  mergeConversationsPreservePreview,
+  mergeGroupsPreservePreview,
+  setConversationLastMessagePreview,
+  setGroupLastMessagePreview
+} from "./lastMessage";
+export { fetchLastMessagePreviewForThread } from "./incomingChatPreview";
+export { threadUnreadKey } from "./threadUnread";
 export { retentionMinutesFrom, retentionUnitValueFromMinutes } from "./retention";
 export {
   contactRemoteNickname,

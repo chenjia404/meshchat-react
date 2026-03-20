@@ -30,6 +30,10 @@ export interface UseChatWebSocketParams {
     id: string | null;
   }>;
   isMobileRef: React.MutableRefObject<boolean>;
+  /** 收到新訊息時刷新側邊會話列表（預覽/排序） */
+  scheduleRefreshConversationList?: () => void;
+  /** 解析 WS payload 並補上側欄最後一則預覽（對方來訊時列表 API 常無 last_message） */
+  onIncomingChatMessage?: (raw: Record<string, unknown>) => void;
 }
 
 /**
@@ -48,7 +52,9 @@ export function useChatWebSocket({
   setMobileView,
   activeTabRef,
   selectedThreadRef,
-  isMobileRef
+  isMobileRef,
+  scheduleRefreshConversationList,
+  onIncomingChatMessage
 }: UseChatWebSocketParams) {
   useEffect(() => {
     if (activeTab !== "chat") return;
@@ -103,9 +109,14 @@ export function useChatWebSocket({
 
         if (evt.type === "message") {
           if (activeTabRef.current !== "chat") return;
+          scheduleRefreshConversationList?.();
+          try {
+            onIncomingChatMessage?.(evt as unknown as Record<string, unknown>);
+          } catch {
+            /* ignore */
+          }
           const sel = selectedThreadRef.current;
-          if (!sel.id) return;
-          if (!evt?.kind || !evt?.conversation_id) return;
+          if (!sel.id || !evt?.kind || !evt?.conversation_id) return;
 
           if (evt.kind === sel.kind && evt.conversation_id === sel.id) {
             void loadThreadMessages(sel.kind, sel.id, { silent: true });
@@ -187,6 +198,8 @@ export function useChatWebSocket({
     setMobileView,
     activeTabRef,
     selectedThreadRef,
-    isMobileRef
+    isMobileRef,
+    scheduleRefreshConversationList,
+    onIncomingChatMessage
   ]);
 }

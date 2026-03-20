@@ -31,6 +31,14 @@ import {
 } from "../../utils";
 import { directFileUrl, groupFileUrl } from "../../api";
 
+/** 會話列表：最後一則訊息預覽（過長取開頭一段並加省略號） */
+function threadLastMessagePreview(text: string | undefined, maxChars = 36): string {
+  const t = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  if (t.length <= maxChars) return t;
+  return t.slice(0, maxChars) + "…";
+}
+
 export interface ChatThreadListItem {
   id: string;
   kind: ThreadKind;
@@ -38,6 +46,8 @@ export interface ChatThreadListItem {
   subtitle?: string;
   lastMessage?: string;
   lastTime?: string;
+  /** 客戶端未讀條數（非當前會話時遞增） */
+  unreadCount?: number;
   peerId?: string;
   avatarUrl?: string;
   connectionName?: string;
@@ -101,6 +111,8 @@ export interface ChatTabProps {
   sendFileForCurrentThread: (file: File) => Promise<void>;
   openGroupThread: (groupId: string) => void;
   joinGroup: (groupId: string) => void;
+  /** 標記會話已讀（清除側欄未讀角標） */
+  markThreadAsRead: (kind: ThreadKind, threadId: string) => void;
 }
 
 export function ChatTab(props: ChatTabProps) {
@@ -143,7 +155,8 @@ export function ChatTab(props: ChatTabProps) {
     handleSendMessage,
     sendFileForCurrentThread,
     openGroupThread,
-    joinGroup
+    joinGroup,
+    markThreadAsRead
   } = props;
 
   return (
@@ -181,6 +194,7 @@ export function ChatTab(props: ChatTabProps) {
                     onClick={() => {
                       setSelectedThreadId(thread.id);
                       setSelectedThreadKind(thread.kind);
+                      markThreadAsRead(thread.kind, thread.id);
                       setMobileView(isMobile ? "chat" : mobileView);
                       if (thread.id) {
                         loadThreadMessages(thread.kind, thread.id);
@@ -206,39 +220,93 @@ export function ChatTab(props: ChatTabProps) {
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "space-between",
-                          gap: 8
+                          gap: 8,
+                          minWidth: 0
                         }}
                       >
                         <div
                           style={{
-                            fontWeight: 600,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap"
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            minWidth: 0,
+                            flex: 1
                           }}
-                          title={thread.title}
                         >
-                          {thread.title}
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              flex: 1,
+                              minWidth: 0
+                            }}
+                            title={thread.title}
+                          >
+                            {thread.title}
+                          </div>
+                          {(thread.unreadCount ?? 0) > 0 ? (
+                            <span
+                              title={`未读 ${thread.unreadCount}`}
+                              style={{
+                                minWidth: 18,
+                                height: 18,
+                                padding: "0 5px",
+                                borderRadius: 9,
+                                background: "#f85149",
+                                color: "#fff",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                lineHeight: "18px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                flexShrink: 0
+                              }}
+                            >
+                              {(thread.unreadCount ?? 0) > 99
+                                ? "99+"
+                                : thread.unreadCount}
+                            </span>
+                          ) : null}
                         </div>
                         <div style={{ fontSize: 12, opacity: 0.7, flexShrink: 0 }}>
                           {thread.lastTime}
                         </div>
                       </div>
-                      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
-                        {thread.kind === "group" ? thread.subtitle : " "}
-                      </div>
                       <div
                         style={{
                           fontSize: 12,
-                          opacity: 0.7,
+                          opacity: 0.75,
                           marginTop: 2,
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap"
                         }}
-                        title={thread.lastMessage || ""}
+                        title={thread.subtitle || ""}
                       >
-                        {thread.lastMessage || " "}
+                        {thread.subtitle?.trim() ? thread.subtitle : "\u00a0"}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          opacity: 0.72,
+                          marginTop: 2,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
+                        }}
+                        title={thread.lastMessage?.trim() || ""}
+                      >
+                        {(() => {
+                          const preview = threadLastMessagePreview(thread.lastMessage);
+                          return preview ? (
+                            preview
+                          ) : (
+                            <span style={{ opacity: 0.45 }}>暂无消息</span>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

@@ -3,6 +3,14 @@ export function shortPeer(peerID: string | undefined | null): string {
   return peerID.length > 20 ? peerID.slice(0, 20) + "…" : peerID;
 }
 
+/** 取 Peer ID 後段用於列表區分（libp2p 前綴常相同），過長時前加省略號 */
+export function shortPeerTail(peerID: string | undefined | null, maxLen = 18): string {
+  if (!peerID) return "-";
+  const s = peerID.trim();
+  if (s.length <= maxLen) return s;
+  return "…" + s.slice(-maxLen);
+}
+
 export function formatTime(value?: string | null): string {
   if (!value) return "";
   const d = new Date(value);

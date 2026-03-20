@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "@chatscope/chat-ui-kit-styles/dist/default/styles.min.css";
 import type {
   ThreadKind,
@@ -28,7 +28,16 @@ import {
   normalizeChatMe,
   isImageMime,
   isVideoMime,
-  resolveMeshserverAssetUrl
+  resolveMeshserverAssetUrl,
+  withOptimisticConversationPreview,
+  withOptimisticGroupPreview,
+  mergeConversationsPreservePreview,
+  mergeGroupsPreservePreview,
+  extractInlinePreviewFromWsPayload,
+  fetchLastMessagePreviewForThread,
+  setConversationLastMessagePreview,
+  setGroupLastMessagePreview,
+  threadUnreadKey
 } from "./utils";
 import { createListRowMenuHandlers } from "./hooks/createListRowMenuHandlers";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -108,6 +117,30 @@ const App: React.FC = () => {
       ),
     [conversations, groups, meshGroups, contactsRaw, contactAvatarMap]
   );
+
+  /** 各會話未讀條數（key: `${kind}:${id}`） */
+  const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>(
+    () => ({})
+  );
+
+  const threadsWithUnread = useMemo(
+    () =>
+      threads.map(t => ({
+        ...t,
+        unreadCount: threadUnreadCounts[threadUnreadKey(t.kind, t.id)] ?? 0
+      })),
+    [threads, threadUnreadCounts]
+  );
+
+  const markThreadAsRead = useCallback((kind: ThreadKind, threadId: string) => {
+    const key = threadUnreadKey(kind, threadId);
+    setThreadUnreadCounts(prev => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
 
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedThreadKind, setSelectedThreadKind] = useState<ThreadKind>("direct");
@@ -243,6 +276,95 @@ const App: React.FC = () => {
     setSelectedGroupDetails
   });
 
+  const convListRefreshTimerRef = React.useRef<number | null>(null);
+  const scheduleRefreshConversationList = useCallback(() => {
+    if (convListRefreshTimerRef.current != null) {
+      window.clearTimeout(convListRefreshTimerRef.current);
+    }
+    convListRefreshTimerRef.current = window.setTimeout(() => {
+      convListRefreshTimerRef.current = null;
+      void Promise.all([
+        get<ConversationRaw[]>("/api/v1/chat/conversations"),
+        get<GroupRaw[]>("/api/v1/groups")
+      ])
+        .then(([convs, grps]) => {
+          setConversations(prev =>
+            mergeConversationsPreservePreview(
+              prev,
+              normalizeEntityList<ConversationRaw>(convs, ["conversations"])
+            )
+          );
+          setGroups(prev =>
+            mergeGroupsPreservePreview(
+              prev,
+              normalizeEntityList<GroupRaw>(grps, ["groups"])
+            )
+          );
+        })
+        .catch(() => {
+          /* ignore */
+        });
+    }, 400);
+  }, []);
+
+  const handleIncomingChatMessage = useCallback(
+    (raw: Record<string, unknown>) => {
+      const kindStr = String(raw.kind ?? "direct").toLowerCase();
+      const idRaw = raw.conversation_id ?? raw.group_id;
+      const id = typeof idRaw === "string" ? idRaw : "";
+      if (!id.trim()) return;
+
+      if (kindStr === "meshserver_group") return;
+
+      const threadKind: ThreadKind = kindStr === "group" ? "group" : "direct";
+      const fromPeer = raw.from_peer_id;
+      const isSelf =
+        typeof fromPeer === "string" &&
+        !!me?.peer_id &&
+        fromPeer === me.peer_id;
+      if (!isSelf) {
+        const sel = selectedThreadRef.current;
+        if (!(sel.id === id && sel.kind === threadKind)) {
+          const ukey = threadUnreadKey(threadKind, id);
+          setThreadUnreadCounts(prev => ({
+            ...prev,
+            [ukey]: (prev[ukey] || 0) + 1
+          }));
+        }
+      }
+
+      const inline = extractInlinePreviewFromWsPayload(raw);
+      const applyPreview = (preview: string) => {
+        if (!preview.trim()) return;
+        if (kindStr === "group") {
+          setGroups(prev => setGroupLastMessagePreview(prev, id, preview));
+        } else {
+          setConversations(prev =>
+            setConversationLastMessagePreview(prev, id, preview)
+          );
+        }
+      };
+
+      if (inline) {
+        applyPreview(inline);
+        return;
+      }
+
+      void (async () => {
+        try {
+          const preview =
+            kindStr === "group"
+              ? await fetchLastMessagePreviewForThread("group", id)
+              : await fetchLastMessagePreviewForThread("direct", id);
+          applyPreview(preview);
+        } catch {
+          /* ignore */
+        }
+      })();
+    },
+    [me?.peer_id]
+  );
+
   useChatWebSocket({
     activeTab,
     loadThreadMessages,
@@ -256,7 +378,9 @@ const App: React.FC = () => {
     setMobileView,
     activeTabRef,
     selectedThreadRef,
-    isMobileRef
+    isMobileRef,
+    scheduleRefreshConversationList,
+    onIncomingChatMessage: handleIncomingChatMessage
   });
 
   const openRetentionModal = () => {
@@ -418,6 +542,7 @@ const App: React.FC = () => {
           }
         );
         await loadThreadMessages("meshserver_group", selectedThreadId);
+        markThreadAsRead("meshserver_group", selectedThreadId);
       } else if (selectedThreadKind === "group") {
         await post(`/api/v1/groups/${encodeURIComponent(selectedThreadId)}/messages`, {
           text
@@ -429,7 +554,14 @@ const App: React.FC = () => {
           get<GroupRaw[]>("/api/v1/groups")
         ]);
         setMessages(Array.isArray(list) ? list : []);
-        setGroups(Array.isArray(grps) ? grps : []);
+        setGroups(
+          withOptimisticGroupPreview(
+            Array.isArray(grps) ? grps : [],
+            selectedThreadId,
+            text
+          )
+        );
+        markThreadAsRead("group", selectedThreadId);
       } else {
         const currentConv = conversations.find(c => c.conversation_id === selectedThreadId) || null;
         const currentActive = (currentConv?.state || "active") === "active";
@@ -465,7 +597,14 @@ const App: React.FC = () => {
           get<ConversationRaw[]>("/api/v1/chat/conversations")
         ]);
         setMessages(Array.isArray(list) ? list : []);
-        setConversations(Array.isArray(convs) ? convs : []);
+        setConversations(
+          withOptimisticConversationPreview(
+            Array.isArray(convs) ? convs : [],
+            targetConversationId,
+            text
+          )
+        );
+        markThreadAsRead("direct", targetConversationId);
       }
     } catch (err: any) {
       console.error("发送讯息失败:", err);
@@ -500,6 +639,7 @@ const App: React.FC = () => {
 
         setFileSending(null);
         await loadThreadMessages("meshserver_group", selectedThreadId);
+        markThreadAsRead("meshserver_group", selectedThreadId);
         return;
       }
 
@@ -545,14 +685,32 @@ const App: React.FC = () => {
       );
       if (selectedThreadKind === "group") {
         const grps = await get<GroupRaw[]>("/api/v1/groups");
-        setGroups(normalizeEntityList<GroupRaw>(grps, ["groups"]));
+        const normalized = normalizeEntityList<GroupRaw>(grps, ["groups"]);
+        setGroups(
+          withOptimisticGroupPreview(
+            normalized,
+            selectedThreadId,
+            `[文件] ${file.name}`
+          )
+        );
       } else {
         const convs = await get<ConversationRaw[]>(
           "/api/v1/chat/conversations"
         );
+        const normalized = normalizeEntityList<ConversationRaw>(convs, [
+          "conversations"
+        ]);
         setConversations(
-          normalizeEntityList<ConversationRaw>(convs, ["conversations"])
+          withOptimisticConversationPreview(
+            normalized,
+            targetConversationId,
+            `[文件] ${file.name}`
+          )
         );
+        markThreadAsRead("direct", targetConversationId);
+      }
+      if (selectedThreadKind === "group") {
+        markThreadAsRead("group", selectedThreadId);
       }
     } catch (err: any) {
       console.error("发送文件失败:", err);
@@ -952,6 +1110,7 @@ const App: React.FC = () => {
       // 跳转聊天页
       setSelectedThreadKind("meshserver_group");
       setSelectedThreadId(channelId);
+      markThreadAsRead("meshserver_group", channelId);
       setActiveTab("chat");
       setMeshJoinOpen(false);
       setMeshJoinStep("peer");
@@ -1113,6 +1272,7 @@ const App: React.FC = () => {
   const openGroupThread = async (groupId: string) => {
     setSelectedThreadId(groupId);
     setSelectedThreadKind("group");
+    markThreadAsRead("group", groupId);
     if (isMobile) setMobileView("chat");
     await loadThreadMessages("group", groupId);
   };
@@ -1228,6 +1388,7 @@ const App: React.FC = () => {
     if (existing) {
       setSelectedThreadId(existing.conversation_id);
       setSelectedThreadKind("direct");
+      markThreadAsRead("direct", existing.conversation_id);
       setActiveTab("chat");
       return;
     }
@@ -1269,6 +1430,7 @@ const App: React.FC = () => {
         if (existing?.conversation_id) {
           setSelectedThreadId(existing.conversation_id);
           setSelectedThreadKind("direct");
+          markThreadAsRead("direct", existing.conversation_id);
           setActiveTab("chat");
           if (isMobile) setMobileView("chat");
         } else {
@@ -1504,7 +1666,7 @@ const App: React.FC = () => {
       <div style={{ flex: 1, overflow: "hidden" }}>
         {activeTab === "chat" && (
           <ChatTab
-            threads={threads}
+            threads={threadsWithUnread}
             selectedThreadId={selectedThreadId}
             selectedThreadKind={selectedThreadKind}
             setSelectedThreadId={setSelectedThreadId}
@@ -1543,6 +1705,7 @@ const App: React.FC = () => {
             sendFileForCurrentThread={sendFileForCurrentThread}
             openGroupThread={openGroupThread}
             joinGroup={joinGroup}
+            markThreadAsRead={markThreadAsRead}
           />
         )}
         {activeTab === "contacts" && (
