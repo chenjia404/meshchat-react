@@ -9,6 +9,14 @@ import type {
 import { normalizeEntityList } from "../utils";
 import type { WsChatEvent } from "../types/ws";
 
+/** 後端好友/會話建立完成推送（發起方收到，與 friend_request accepted 互補） */
+function isSessionAcceptEvent(evt: WsChatEvent): boolean {
+  const t = String(evt.type ?? "");
+  if (t === "SessionAccept") return true;
+  const lower = t.toLowerCase();
+  return lower === "session_accept" || lower === "sessionaccept";
+}
+
 export interface UseChatWebSocketParams {
   activeTab: "chat" | "contacts" | "me";
   loadThreadMessages: (
@@ -63,8 +71,7 @@ export function useChatWebSocket({
   onMessageState
 }: UseChatWebSocketParams) {
   useEffect(() => {
-    if (activeTab !== "chat") return;
-
+    /** 全程保持 WS（聯絡人 / 聊天 / 我）：否則在聯絡人頁收不到 SessionAccept、好友狀態推送 */
     let cancelled = false;
     let retryCount = 0;
     let ws: WebSocket | null = null;
@@ -112,6 +119,23 @@ export function useChatWebSocket({
           return;
         }
         if (!evt?.type) return;
+
+        if (isSessionAcceptEvent(evt)) {
+          void (async () => {
+            const [nextReqs, nextContacts, nextConvs] = await Promise.all([
+              get<FriendRequestRaw[]>("/api/v1/chat/requests").catch(() => []),
+              get<ContactRaw[]>("/api/v1/chat/contacts").catch(() => []),
+              get<ConversationRaw[]>("/api/v1/chat/conversations").catch(() => [])
+            ]);
+            if (cancelled) return;
+            setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
+            setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
+            setConversations(
+              normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"])
+            );
+          })().catch(() => null);
+          return;
+        }
 
         if (evt.type === "message_state") {
           if (activeTabRef.current !== "chat") return;
@@ -205,7 +229,6 @@ export function useChatWebSocket({
       }
     };
   }, [
-    activeTab,
     loadThreadMessages,
     setWsConnected,
     setRequestsRaw,
