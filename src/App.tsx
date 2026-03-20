@@ -1080,10 +1080,13 @@ const App: React.FC = () => {
           }
         } else {
           if (!silent) setSelectedGroupDetails(null);
-          // 先请求对端同步，再读本地消息列表（轮询时也要 sync，否则只看到旧缓存）
-          await post(`/api/v1/chat/conversations/${encodeURIComponent(id)}/sync`, {}).catch(
-            () => null
-          );
+          // 初次进入：直接读本地历史，避免 sync 阻塞或失败导致整段加载卡住。
+          // 后台静默轮询（silent）时再 sync，拉取对端新消息。
+          if (silent) {
+            await post(`/api/v1/chat/conversations/${encodeURIComponent(id)}/sync`, {}).catch(
+              () => null
+            );
+          }
           const resp = await get<any>(
             `/api/v1/chat/conversations/${encodeURIComponent(id)}/messages`
           );
