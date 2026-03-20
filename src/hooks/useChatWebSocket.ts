@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { api, get } from "../api";
 import type {
   ContactRaw,
@@ -38,43 +38,25 @@ export interface UseChatWebSocketParams {
     id: string | null;
   }>;
   isMobileRef: React.MutableRefObject<boolean>;
-  /** 收到新訊息時刷新側邊會話列表（預覽/排序） */
   scheduleRefreshConversationList?: () => void;
-  /** 解析 WS payload 並補上側欄最後一則預覽（對方來訊時列表 API 常無 last_message） */
   onIncomingChatMessage?: (raw: Record<string, unknown>) => void;
-  /** 若後端已帶完整訊息欄位，返回 true 則不再 silent 拉取 /messages */
   mergeMessageFromWs?: (evt: WsChatEvent) => boolean;
-  /** type === message_state：依 msg_id 更新當前線程內既有訊息 */
   onMessageState?: (raw: Record<string, unknown>) => void;
 }
 
 /**
- * 連線 `/api/v1/chat/ws`：新訊息刷新當前線程、好友請求狀態變更時重載列表。
+ * 連線 `/api/v1/chat/ws`：掛載後常駐，不因父組件 callback 更新而斷線；僅 App 卸載時關閉。
+ * 網路斷開時由 onclose 指數退避自動重連。
  */
-export function useChatWebSocket({
-  activeTab,
-  loadThreadMessages,
-  setWsConnected,
-  setRequestsRaw,
-  setContactsRaw,
-  setConversations,
-  setSelectedThreadId,
-  setSelectedThreadKind,
-  setActiveTab,
-  setMobileView,
-  activeTabRef,
-  selectedThreadRef,
-  isMobileRef,
-  scheduleRefreshConversationList,
-  onIncomingChatMessage,
-  mergeMessageFromWs,
-  onMessageState
-}: UseChatWebSocketParams) {
+export function useChatWebSocket(props: UseChatWebSocketParams) {
+  const propsRef = useRef(props);
+  propsRef.current = props;
+
   useEffect(() => {
-    /** 全程保持 WS（聯絡人 / 聊天 / 我）：否則在聯絡人頁收不到 SessionAccept、好友狀態推送 */
     let cancelled = false;
     let retryCount = 0;
     let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const makeWsUrl = () => {
       const p = api("/api/v1/chat/ws");
@@ -84,31 +66,37 @@ export function useChatWebSocket({
       return `${proto}//${location.host}${p}`;
     };
 
+    const clearReconnectTimer = () => {
+      if (reconnectTimer != null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
     const connect = () => {
       if (cancelled) return;
+      clearReconnectTimer();
       ws = new WebSocket(makeWsUrl());
 
       ws.onopen = () => {
         if (cancelled) return;
-        setWsConnected(true);
+        propsRef.current.setWsConnected(true);
         retryCount = 0;
       };
 
       ws.onclose = () => {
         if (cancelled) return;
-        setWsConnected(false);
+        propsRef.current.setWsConnected(false);
         retryCount++;
         const delay = Math.min(30000, 1000 * Math.pow(2, retryCount));
-        window.setTimeout(connect, delay);
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, delay);
       };
 
-      ws.onerror = () => {
-        try {
-          ws?.close();
-        } catch {
-          /* ignore */
-        }
-      };
+      /** 不主動 close：錯誤後通常會跟著 onclose，避免重複斷線與競態 */
+      ws.onerror = () => {};
 
       ws.onmessage = ev => {
         const data = (ev.data || "") as string;
@@ -120,6 +108,8 @@ export function useChatWebSocket({
         }
         if (!evt?.type) return;
 
+        const p = propsRef.current;
+
         if (isSessionAcceptEvent(evt)) {
           void (async () => {
             const [nextReqs, nextContacts, nextConvs] = await Promise.all([
@@ -128,9 +118,9 @@ export function useChatWebSocket({
               get<ConversationRaw[]>("/api/v1/chat/conversations").catch(() => [])
             ]);
             if (cancelled) return;
-            setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
-            setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
-            setConversations(
+            p.setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
+            p.setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
+            p.setConversations(
               normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"])
             );
           })().catch(() => null);
@@ -138,9 +128,9 @@ export function useChatWebSocket({
         }
 
         if (evt.type === "message_state") {
-          if (activeTabRef.current !== "chat") return;
+          if (p.activeTabRef.current !== "chat") return;
           try {
-            onMessageState?.(evt as unknown as Record<string, unknown>);
+            p.onMessageState?.(evt as unknown as Record<string, unknown>);
           } catch {
             /* ignore */
           }
@@ -148,20 +138,20 @@ export function useChatWebSocket({
         }
 
         if (evt.type === "message") {
-          if (activeTabRef.current !== "chat") return;
-          scheduleRefreshConversationList?.();
+          if (p.activeTabRef.current !== "chat") return;
+          p.scheduleRefreshConversationList?.();
           try {
-            onIncomingChatMessage?.(evt as unknown as Record<string, unknown>);
+            p.onIncomingChatMessage?.(evt as unknown as Record<string, unknown>);
           } catch {
             /* ignore */
           }
-          const sel = selectedThreadRef.current;
+          const sel = p.selectedThreadRef.current;
           if (!sel.id || !evt?.kind || !evt?.conversation_id) return;
 
           if (evt.kind === sel.kind && evt.conversation_id === sel.id) {
-            const merged = mergeMessageFromWs?.(evt);
+            const merged = p.mergeMessageFromWs?.(evt);
             if (!merged) {
-              void loadThreadMessages(sel.kind, sel.id, { silent: true });
+              void p.loadThreadMessages(sel.kind, sel.id, { silent: true });
             }
           }
           return;
@@ -184,29 +174,30 @@ export function useChatWebSocket({
                 : Promise.resolve([] as ConversationRaw[])
             ]);
 
-            setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
+            const pr = propsRef.current;
+            pr.setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
             if (accepted) {
-              setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
-              setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
+              pr.setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
+              pr.setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
 
               if (convIDFromEvt) {
-                setSelectedThreadId(convIDFromEvt);
-                setSelectedThreadKind("direct");
-                setActiveTab("chat");
-                if (isMobileRef.current) setMobileView("chat");
-                void loadThreadMessages("direct", convIDFromEvt, { silent: true });
+                pr.setSelectedThreadId(convIDFromEvt);
+                pr.setSelectedThreadKind("direct");
+                pr.setActiveTab("chat");
+                if (pr.isMobileRef.current) pr.setMobileView("chat");
+                void pr.loadThreadMessages("direct", convIDFromEvt, { silent: true });
               }
             } else if (rejected) {
-              setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
-              if (convIDFromEvt && selectedThreadRef.current.id === convIDFromEvt) {
+              pr.setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
+              if (convIDFromEvt && pr.selectedThreadRef.current.id === convIDFromEvt) {
                 const activeConvs = (nextConvs || []).filter(
                   c => (c.state || "active") === "active"
                 );
-                setSelectedThreadId(activeConvs[0]?.conversation_id || null);
-                setSelectedThreadKind("direct");
+                pr.setSelectedThreadId(activeConvs[0]?.conversation_id || null);
+                pr.setSelectedThreadKind("direct");
               }
               const shouldAlert =
-                !!convIDFromEvt && selectedThreadRef.current.id === convIDFromEvt;
+                !!convIDFromEvt && pr.selectedThreadRef.current.id === convIDFromEvt;
               if (shouldAlert) {
                 alert("对方尚未建立好友关系，请重新添加好友。");
               }
@@ -221,29 +212,13 @@ export function useChatWebSocket({
     connect();
     return () => {
       cancelled = true;
-      setWsConnected(false);
+      clearReconnectTimer();
+      propsRef.current.setWsConnected(false);
       try {
         ws?.close();
       } catch {
         /* ignore */
       }
     };
-  }, [
-    loadThreadMessages,
-    setWsConnected,
-    setRequestsRaw,
-    setContactsRaw,
-    setConversations,
-    setSelectedThreadId,
-    setSelectedThreadKind,
-    setActiveTab,
-    setMobileView,
-    activeTabRef,
-    selectedThreadRef,
-    isMobileRef,
-    scheduleRefreshConversationList,
-    onIncomingChatMessage,
-    mergeMessageFromWs,
-    onMessageState
-  ]);
+  }, []);
 }
