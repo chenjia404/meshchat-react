@@ -1,0 +1,37 @@
+import { api } from "./config";
+
+export async function get<T = any>(path: string): Promise<T> {
+  const r = await fetch(api(path));
+  const data = (await r.json().catch(() => ({}))) as any;
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data as T;
+}
+
+export async function post<T = any>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(api(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = (await r.json().catch(() => ({}))) as any;
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data as T;
+}
+
+/** 刪除資源：優先 DELETE，405 時改 POST .../delete（兼容部分後端） */
+export async function deleteChatResource(pathNoQuery: string): Promise<void> {
+  const url = api(pathNoQuery);
+  let r = await fetch(url, { method: "DELETE" });
+  if (r.ok) return;
+  let data: any = {};
+  try {
+    data = (await r.json().catch(() => ({}))) as any;
+  } catch {
+    data = {};
+  }
+  if (r.status === 405 || r.status === 501) {
+    await post(`${pathNoQuery}/delete`, {});
+    return;
+  }
+  throw new Error(data.error || r.statusText || "刪除失敗");
+}
