@@ -26,6 +26,12 @@ export {
   setGroupLastMessagePreview
 } from "./lastMessage";
 export { fetchLastMessagePreviewForThread } from "./incomingChatPreview";
+export {
+  wsPayloadHasFullMessage,
+  directMessageFromWsPayload,
+  groupMessageFromWsPayload,
+  mergeMessagesByTime
+} from "./wsInboundMessage";
 export { threadUnreadKey } from "./threadUnread";
 export { retentionMinutesFrom, retentionUnitValueFromMinutes } from "./retention";
 export {

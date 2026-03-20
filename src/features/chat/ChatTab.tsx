@@ -69,7 +69,6 @@ export interface ChatTabProps {
     id: string,
     title: string
   ) => void;
-  loadThreadMessages: (kind: ThreadKind, id: string) => void | Promise<void>;
   loadPeerStatus: (peerId: string) => void;
   isMobile: boolean;
   mobileView: "list" | "chat";
@@ -125,7 +124,6 @@ export function ChatTab(props: ChatTabProps) {
     contactAvatarMap,
     resolveAvatarSrc,
     openListItemMenuAt,
-    loadThreadMessages,
     loadPeerStatus,
     isMobile,
     mobileView,
@@ -196,9 +194,7 @@ export function ChatTab(props: ChatTabProps) {
                       setSelectedThreadKind(thread.kind);
                       markThreadAsRead(thread.kind, thread.id);
                       setMobileView(isMobile ? "chat" : mobileView);
-                      if (thread.id) {
-                        loadThreadMessages(thread.kind, thread.id);
-                      }
+                      // 訊息由 useThreadMessagesLoader 在 selectedThreadId/kind 變更時載入，避免重複 GET
                       if (thread.kind === "direct") {
                         const peerId = (thread as any).peerId as string | undefined;
                         if (peerId) loadPeerStatus(peerId);

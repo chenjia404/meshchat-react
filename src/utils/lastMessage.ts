@@ -36,7 +36,11 @@ export function extractInlinePreviewFromWsPayload(
     const v = raw[k];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
-  return peekLastMessagePlaintext(raw.last_message);
+  const nested = peekLastMessagePlaintext(raw.last_message);
+  if (nested) return nested;
+  const fn = typeof raw.file_name === "string" ? raw.file_name.trim() : "";
+  if (fn) return `[文件] ${fn}`;
+  return "";
 }
 
 /**

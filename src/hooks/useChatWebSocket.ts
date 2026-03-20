@@ -34,6 +34,8 @@ export interface UseChatWebSocketParams {
   scheduleRefreshConversationList?: () => void;
   /** 解析 WS payload 並補上側欄最後一則預覽（對方來訊時列表 API 常無 last_message） */
   onIncomingChatMessage?: (raw: Record<string, unknown>) => void;
+  /** 若後端已帶完整訊息欄位，返回 true 則不再 silent 拉取 /messages */
+  mergeMessageFromWs?: (evt: WsChatEvent) => boolean;
 }
 
 /**
@@ -54,7 +56,8 @@ export function useChatWebSocket({
   selectedThreadRef,
   isMobileRef,
   scheduleRefreshConversationList,
-  onIncomingChatMessage
+  onIncomingChatMessage,
+  mergeMessageFromWs
 }: UseChatWebSocketParams) {
   useEffect(() => {
     if (activeTab !== "chat") return;
@@ -119,7 +122,10 @@ export function useChatWebSocket({
           if (!sel.id || !evt?.kind || !evt?.conversation_id) return;
 
           if (evt.kind === sel.kind && evt.conversation_id === sel.id) {
-            void loadThreadMessages(sel.kind, sel.id, { silent: true });
+            const merged = mergeMessageFromWs?.(evt);
+            if (!merged) {
+              void loadThreadMessages(sel.kind, sel.id, { silent: true });
+            }
           }
           return;
         }
@@ -200,6 +206,7 @@ export function useChatWebSocket({
     selectedThreadRef,
     isMobileRef,
     scheduleRefreshConversationList,
-    onIncomingChatMessage
+    onIncomingChatMessage,
+    mergeMessageFromWs
   ]);
 }

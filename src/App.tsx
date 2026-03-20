@@ -14,7 +14,8 @@ import type {
   MeshserverSyncMessage,
   DirectMessage,
   GroupMessage,
-  GroupDetails
+  GroupDetails,
+  WsChatEvent
 } from "./types";
 import { api, get, post, deleteChatResource, avatarUrl, directFileUrl, groupFileUrl } from "./api";
 import {
@@ -37,7 +38,11 @@ import {
   fetchLastMessagePreviewForThread,
   setConversationLastMessagePreview,
   setGroupLastMessagePreview,
-  threadUnreadKey
+  threadUnreadKey,
+  wsPayloadHasFullMessage,
+  directMessageFromWsPayload,
+  groupMessageFromWsPayload,
+  mergeMessagesByTime
 } from "./utils";
 import { createListRowMenuHandlers } from "./hooks/createListRowMenuHandlers";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -365,6 +370,45 @@ const App: React.FC = () => {
     [me?.peer_id]
   );
 
+  /** 後端 WS 已帶正文時直接併入當前線程，避免再 silent 請求 /messages */
+  const mergeMessageFromWs = useCallback(
+    (evt: WsChatEvent): boolean => {
+      const raw = evt as unknown as Record<string, unknown>;
+      if (!wsPayloadHasFullMessage(raw)) return false;
+      const kindStr = String(evt.kind ?? "direct").toLowerCase();
+      if (kindStr === "meshserver_group") return false;
+      const id = String(evt.conversation_id ?? "").trim();
+      if (!id) return false;
+      const sel = selectedThreadRef.current;
+      if (!sel.id || sel.id !== id) return false;
+      const threadKind: ThreadKind = kindStr === "group" ? "group" : "direct";
+      if (sel.kind !== threadKind) return false;
+
+      if (threadKind === "direct") {
+        const dm = directMessageFromWsPayload(raw);
+        if (!dm) return false;
+        setMessages(
+          prev =>
+            mergeMessagesByTime(prev as DirectMessage[], dm) as Array<
+              DirectMessage | GroupMessage | MeshserverSyncMessage
+            >
+        );
+        return true;
+      }
+      const gm = groupMessageFromWsPayload(raw);
+      if (!gm) return false;
+      setMessages(
+        prev =>
+          mergeMessagesByTime(prev as GroupMessage[], gm) as Array<
+            DirectMessage | GroupMessage | MeshserverSyncMessage
+          >
+      );
+      return true;
+    },
+    [setMessages]
+  );
+
+
   useChatWebSocket({
     activeTab,
     loadThreadMessages,
@@ -380,7 +424,8 @@ const App: React.FC = () => {
     selectedThreadRef,
     isMobileRef,
     scheduleRefreshConversationList,
-    onIncomingChatMessage: handleIncomingChatMessage
+    onIncomingChatMessage: handleIncomingChatMessage,
+    mergeMessageFromWs
   });
 
   const openRetentionModal = () => {
@@ -1674,7 +1719,6 @@ const App: React.FC = () => {
             contactAvatarMap={contactAvatarMap}
             resolveAvatarSrc={resolveAvatarSrc}
             openListItemMenuAt={openListItemMenuAt}
-            loadThreadMessages={loadThreadMessages}
             loadPeerStatus={loadPeerStatus}
             isMobile={isMobile}
             mobileView={mobileView}

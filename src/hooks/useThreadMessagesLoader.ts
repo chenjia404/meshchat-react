@@ -28,7 +28,9 @@ export interface UseThreadMessagesLoaderParams {
 const POLL_MS = 4000;
 
 /**
- * 載入當前線程訊息、切換線程時重載、並對活動聊天做輪詢增量同步。
+ * 載入當前線程訊息、切換線程時重載一次。
+ * - 私聊（direct）：僅在切換會話時 GET /messages；之後依 WebSocket 與 silent sync+拉取，不做定時輪詢。
+ * - 群聊 / mesh：維持定時輪詢增量同步。
  */
 export function useThreadMessagesLoader({
   meshGroups,
@@ -124,6 +126,8 @@ export function useThreadMessagesLoader({
     const tick = () => {
       if (document.visibilityState === "hidden") return;
       if (activeTab !== "chat" || !selectedThreadId) return;
+      // 私聊不重複輪詢 GET messages（首次由切換會話的 effect 拉取，增量靠 WS + silent load）
+      if (selectedThreadKind === "direct") return;
 
       let meshAfterSeq = 0;
       if (selectedThreadKind === "meshserver_group") {
