@@ -434,6 +434,23 @@ function extractMeshserverImageSrc(
   return undefined;
 }
 
+function mergeMeshSyncMessages(
+  prev: MeshserverSyncMessage[],
+  incoming: MeshserverSyncMessage[]
+): MeshserverSyncMessage[] {
+  const map = new Map<string, MeshserverSyncMessage>();
+  for (const m of prev) map.set(m.message_id, m);
+  for (const m of incoming) map.set(m.message_id, m);
+  return Array.from(map.values()).sort((a, b) => {
+    const sa = a.seq ?? 0;
+    const sb = b.seq ?? 0;
+    if (sa !== sb) return sa - sb;
+    const ta = a.created_at_ms ?? 0;
+    const tb = b.created_at_ms ?? 0;
+    return ta - tb;
+  });
+}
+
 function deliveryStatusText(state?: string, deliveredAt?: string): string {
   const s = (state || "").trim();
   if (!s) return "";
@@ -582,6 +599,11 @@ const App: React.FC = () => {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
 
+  const messagesRef = React.useRef(messages);
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const [badAvatarUrls, setBadAvatarUrls] = useState<Set<string>>(new Set());
   const [goodAvatarUrls, setGoodAvatarUrls] = useState<Set<string>>(new Set());
   const loadedAvatarUrlsRef = React.useRef<Set<string>>(new Set());
@@ -650,6 +672,23 @@ const App: React.FC = () => {
 
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedThreadKind, setSelectedThreadKind] = useState<ThreadKind>("direct");
+
+  // Keep websocket message handler in sync with latest selection without re-connect.
+  const activeTabRef = React.useRef(activeTab);
+  React.useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  const selectedThreadRef = React.useRef<{
+    kind: ThreadKind;
+    id: string | null;
+  }>({ kind: selectedThreadKind, id: selectedThreadId });
+  React.useEffect(() => {
+    selectedThreadRef.current = { kind: selectedThreadKind, id: selectedThreadId };
+  }, [selectedThreadKind, selectedThreadId]);
+
+  const [wsConnected, setWsConnected] = useState(false);
+
   const [isMobile, setIsMobile] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "chat">("list");
   const [contactsMobileView, setContactsMobileView] = useState<"list" | "detail">(
@@ -994,21 +1033,27 @@ const App: React.FC = () => {
   }, [contactAvatarMap, me?.avatar]);
 
   const loadThreadMessages = React.useCallback(
-    async (kind: ThreadKind, id: string) => {
+    async (
+      kind: ThreadKind,
+      id: string,
+      opts?: { silent?: boolean; meshAfterSeq?: number }
+    ) => {
+      const silent = !!opts?.silent;
       try {
-        setMessagesLoading(true);
+        if (!silent) setMessagesLoading(true);
         if (kind === "group") {
-          // 同步拉取群详细资料，用于权限（admin 可撤回所有人）
-          const details = await get<GroupDetails>(
-            `/api/v1/groups/${encodeURIComponent(id)}`
-          ).catch(() => null);
-          setSelectedGroupDetails(details);
+          if (!silent) {
+            const details = await get<GroupDetails>(
+              `/api/v1/groups/${encodeURIComponent(id)}`
+            ).catch(() => null);
+            setSelectedGroupDetails(details);
+          }
           const resp = await get<any>(
             `/api/v1/groups/${encodeURIComponent(id)}/messages`
           );
           setMessages(normalizeList<GroupMessage>(resp));
         } else if (kind === "meshserver_group") {
-          setSelectedGroupDetails(null);
+          if (!silent) setSelectedGroupDetails(null);
           const thread = meshGroups.find(t => t.threadId === id) || null;
           const connectionName = thread?.connectionName;
           if (!thread || !connectionName) {
@@ -1016,18 +1061,29 @@ const App: React.FC = () => {
             return;
           }
 
+          const afterSeq =
+            opts?.meshAfterSeq !== undefined ? opts.meshAfterSeq : 0;
           const resp = await get<any>(
             `/api/v1/meshserver/channels/${encodeURIComponent(
               id
             )}/sync?connection=${encodeURIComponent(
               connectionName
-            )}&after_seq=0&limit=200`
+            )}&after_seq=${encodeURIComponent(String(afterSeq))}&limit=200`
           ).catch(() => ({ messages: [] }));
 
           const list = Array.isArray(resp?.messages) ? resp.messages : [];
-          setMessages(list as MeshserverSyncMessage[]);
+          const incoming = list as MeshserverSyncMessage[];
+          if (silent && afterSeq > 0) {
+            setMessages(prev => mergeMeshSyncMessages(prev as MeshserverSyncMessage[], incoming));
+          } else {
+            setMessages(incoming);
+          }
         } else {
-          setSelectedGroupDetails(null);
+          if (!silent) setSelectedGroupDetails(null);
+          // 先请求对端同步，再读本地消息列表（轮询时也要 sync，否则只看到旧缓存）
+          await post(`/api/v1/chat/conversations/${encodeURIComponent(id)}/sync`, {}).catch(
+            () => null
+          );
           const resp = await get<any>(
             `/api/v1/chat/conversations/${encodeURIComponent(id)}/messages`
           );
@@ -1035,9 +1091,9 @@ const App: React.FC = () => {
         }
       } catch (err) {
         console.error("载入讯息失败:", err);
-        setMessages([]);
+        if (!silent) setMessages([]);
       } finally {
-        setMessagesLoading(false);
+        if (!silent) setMessagesLoading(false);
       }
     },
     [meshGroups]
@@ -1050,6 +1106,112 @@ const App: React.FC = () => {
     }
     loadThreadMessages(selectedThreadKind, selectedThreadId);
   }, [selectedThreadId, selectedThreadKind, loadThreadMessages]);
+
+  type WsChatEvent = {
+    type?: string;
+    kind?: ThreadKind | string;
+    conversation_id?: string;
+    at_unix_millis?: number;
+  };
+
+  // 通过 websocket 推送“新消息”，比轮询更快更新当前打开的会话。
+  useEffect(() => {
+    if (activeTab !== "chat") return;
+
+    let cancelled = false;
+    let retryCount = 0;
+    let ws: WebSocket | null = null;
+
+    const makeWsUrl = () => {
+      const p = api("/api/v1/chat/ws");
+      if (p.startsWith("https://")) return p.replace("https://", "wss://");
+      if (p.startsWith("http://")) return p.replace("http://", "ws://");
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${location.host}${p}`;
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      ws = new WebSocket(makeWsUrl());
+
+      ws.onopen = () => {
+        if (cancelled) return;
+        setWsConnected(true);
+        retryCount = 0;
+      };
+
+      ws.onclose = () => {
+        if (cancelled) return;
+        setWsConnected(false);
+        retryCount++;
+        const delay = Math.min(30000, 1000 * Math.pow(2, retryCount));
+        window.setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        // Let onclose handle retry.
+        try {
+          ws?.close();
+        } catch {}
+      };
+
+      ws.onmessage = ev => {
+        const data = (ev.data || "") as string;
+        let evt: WsChatEvent | null = null;
+        try {
+          evt = JSON.parse(data);
+        } catch {
+          return;
+        }
+        if (activeTabRef.current !== "chat") return;
+        const sel = selectedThreadRef.current;
+        if (!sel.id) return;
+        if (!evt?.kind || !evt?.conversation_id) return;
+
+        if (evt.kind === sel.kind && evt.conversation_id === sel.id) {
+          loadThreadMessages(sel.kind, sel.id, { silent: true }).catch(() => null);
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      setWsConnected(false);
+      try {
+        ws?.close();
+      } catch {}
+    };
+  }, [activeTab, loadThreadMessages]);
+
+  // 活動會話：定期拉取新消息（避免必須整頁刷新）
+  useEffect(() => {
+    if (activeTab !== "chat" || !selectedThreadId) return;
+    const POLL_MS = 4000;
+
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      if (activeTab !== "chat" || !selectedThreadId) return;
+
+      let meshAfterSeq = 0;
+      if (selectedThreadKind === "meshserver_group") {
+        const list = messagesRef.current as MeshserverSyncMessage[];
+        for (const m of list) {
+          const s = typeof m.seq === "number" ? m.seq : 0;
+          if (s > meshAfterSeq) meshAfterSeq = s;
+        }
+      }
+
+      loadThreadMessages(selectedThreadKind, selectedThreadId, {
+        silent: true,
+        meshAfterSeq:
+          selectedThreadKind === "meshserver_group" ? meshAfterSeq : undefined
+      });
+    };
+
+    const timer = window.setInterval(tick, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [activeTab, selectedThreadId, selectedThreadKind, loadThreadMessages]);
 
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || !selectedThreadId) return;
@@ -3255,10 +3417,48 @@ const App: React.FC = () => {
                         opacity: 0.8,
                         whiteSpace: "pre-wrap",
                         overflowWrap: "anywhere",
-                        wordBreak: "break-word"
+                        wordBreak: "break-word",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8
                       }}
                     >
-                      Peer ID：{selectedContact.id}
+                      <span>Peer ID：{selectedContact.id}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const id = selectedContact.id;
+                          if (!id) return;
+                          if (navigator.clipboard?.writeText) {
+                            navigator.clipboard.writeText(id).catch(() => {});
+                          } else {
+                            try {
+                              const ta = document.createElement("textarea");
+                              ta.value = id;
+                              ta.style.position = "fixed";
+                              ta.style.left = "-9999px";
+                              document.body.appendChild(ta);
+                              ta.select();
+                              document.execCommand("copy");
+                              document.body.removeChild(ta);
+                            } catch {
+                              // ignore
+                            }
+                          }
+                        }}
+                        style={{
+                          padding: "2px 6px",
+                          borderRadius: 6,
+                          border: "1px solid rgba(255,255,255,0.24)",
+                          background: "transparent",
+                          color: "#e5e7eb",
+                          fontSize: 11,
+                          cursor: "pointer",
+                          flexShrink: 0
+                        }}
+                      >
+                        复制
+                      </button>
                     </div>
                     <div
                       style={{
@@ -3550,8 +3750,7 @@ const App: React.FC = () => {
           }}
         >
           <div>mesh 聊天</div>
-          {activeTab !== "me" &&
-          !(activeTab === "chat" && selectedThreadKind === "direct") ? (
+          {activeTab !== "me" ? (
             <button
               type="button"
               onClick={() => setPlusMenuOpen(v => !v)}
