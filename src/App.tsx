@@ -18,6 +18,8 @@ type ThreadKind = "direct" | "group" | "meshserver_group";
 interface Me {
   peer_id: string;
   nickname?: string;
+  /** 後端部分實作用此欄位表示「自己的暱稱」 */
+  remote_nickname?: string;
   chat_kex_pub?: string;
   avatar?: string;
   bio?: string;
@@ -25,9 +27,13 @@ interface Me {
 
 interface ContactRaw {
   peer_id: string;
+  /** 本地備註（後端欄位 nickname） */
   nickname?: string;
+  /** 對方在遠端設定的暱稱（後端欄位 remote_nickname） */
+  remote_nickname?: string;
   avatar?: string;
   bio?: string;
+  chat_kex_pub?: string;
   last_seen_at?: string;
   blocked?: boolean;
 }
@@ -35,6 +41,7 @@ interface ContactRaw {
 interface ConversationRaw {
   conversation_id: string;
   peer_id: string;
+  state?: string;
   updated_at?: string;
   last_message?: { plaintext?: string };
   retention_minutes?: number;
@@ -57,6 +64,8 @@ interface FriendRequestRaw {
   state?: string;
   created_at?: string;
   intro_text?: string;
+  /** 請求方遠端暱稱（與 contacts 語意一致時優先） */
+  remote_nickname?: string;
   nickname?: string;
   bio?: string;
   avatar?: string;
@@ -203,12 +212,13 @@ function safeJsonParse<T = any>(value: unknown): T | null {
 }
 
 function retentionMinutesFrom(
-  unit: "month" | "week" | "day" | "hour" | "off",
+  unit: "month" | "week" | "day" | "hour" | "minute" | "off",
   value: number
 ): number {
   if (unit === "off") return 0;
   const v = Math.max(0, Math.floor(Number(value) || 0));
   if (v <= 0) return 0;
+  if (unit === "minute") return v;
   if (unit === "hour") return v * 60;
   if (unit === "day") return v * 24 * 60;
   if (unit === "week") return v * 7 * 24 * 60;
@@ -217,7 +227,7 @@ function retentionMinutesFrom(
 }
 
 function retentionUnitValueFromMinutes(minutes?: number | null): {
-  unit: "month" | "week" | "day" | "hour" | "off";
+  unit: "month" | "week" | "day" | "hour" | "minute" | "off";
   value: number;
 } {
   const m = Math.max(0, Math.floor(Number(minutes) || 0));
@@ -235,7 +245,11 @@ function retentionUnitValueFromMinutes(minutes?: number | null): {
   if (m >= day) {
     return { unit: "day", value: Math.max(1, Math.round(m / day)) };
   }
-  return { unit: "hour", value: Math.max(1, Math.round(m / hour)) };
+  // 能整除为整小时时用“小时”，否则用“分钟”精确展示（如 45 分钟、90 分钟）
+  if (m >= hour && m % hour === 0) {
+    return { unit: "hour", value: Math.max(1, m / hour) };
+  }
+  return { unit: "minute", value: Math.max(1, m) };
 }
 
 // API 基地址：优先从 Vite env 读取；没有配置时使用相对路径（更适合 WebView/静态部署）。
@@ -294,6 +308,69 @@ async function post<T = any>(path: string, body?: unknown): Promise<T> {
   const data = (await r.json().catch(() => ({}))) as any;
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data as T;
+}
+
+/** 刪除資源：優先 DELETE，405 時改 POST .../delete（兼容部分後端） */
+async function deleteChatResource(pathNoQuery: string): Promise<void> {
+  const url = api(pathNoQuery);
+  let r = await fetch(url, { method: "DELETE" });
+  if (r.ok) return;
+  let data: any = {};
+  try {
+    data = (await r.json().catch(() => ({}))) as any;
+  } catch {
+    data = {};
+  }
+  if (r.status === 405 || r.status === 501) {
+    await post(`${pathNoQuery}/delete`, {});
+    return;
+  }
+  throw new Error(data.error || r.statusText || "刪除失敗");
+}
+
+function createListRowMenuHandlers(
+  onOpen: (clientX: number, clientY: number) => void
+): {
+  onPointerDown: React.PointerEventHandler;
+  onPointerUp: React.PointerEventHandler;
+  onPointerCancel: React.PointerEventHandler;
+  onPointerMove: React.PointerEventHandler;
+  onContextMenu: React.MouseEventHandler;
+} {
+  let timer: number | null = null;
+  let startX = 0;
+  let startY = 0;
+  const clear = () => {
+    if (timer != null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+  return {
+    onPointerDown: e => {
+      if (e.pointerType === "mouse") return;
+      startX = e.clientX;
+      startY = e.clientY;
+      clear();
+      timer = window.setTimeout(() => {
+        onOpen(e.clientX, e.clientY);
+        clear();
+      }, 520);
+    },
+    onPointerUp: () => clear(),
+    onPointerCancel: () => clear(),
+    onPointerMove: e => {
+      if (timer == null) return;
+      const dx = Math.abs(e.clientX - startX);
+      const dy = Math.abs(e.clientY - startY);
+      if (dx > 10 || dy > 10) clear();
+    },
+    onContextMenu: e => {
+      e.preventDefault();
+      e.stopPropagation();
+      onOpen(e.clientX, e.clientY);
+    }
+  };
 }
 
 function shortPeer(peerID: string | undefined | null): string {
@@ -454,16 +531,27 @@ function mergeMeshSyncMessages(
 function deliveryStatusText(state?: string, deliveredAt?: string): string {
   const s = (state || "").trim();
   if (!s) return "";
-  const label =
-    s === "sent"
-      ? "已送出"
-      : s === "delivered_local"
-        ? "已投递"
-        : s === "delivered_remote" || s === "delivered"
-          ? "已送达"
-          : s === "read_remote" || s === "read"
-            ? "已读"
-            : "";
+
+  let label = "";
+  switch (s) {
+    case "sent":
+      label = "已送出";
+      break;
+    case "delivered_local":
+      label = "已投递";
+      break;
+    case "delivered_remote":
+    case "delivered":
+      label = "已送达";
+      break;
+    case "read_remote":
+    case "read":
+      label = "已读";
+      break;
+    default:
+      label = "";
+  }
+
   if (!label) return "";
   if (deliveredAt) {
     const rt = relativeTime(deliveredAt);
@@ -489,10 +577,103 @@ function relativeTime(value?: string | null): string {
   return `${Math.round(abs / (24 * 60 * 60 * 1000))} 天${diff >= 0 ? "前" : "后"}`;
 }
 
+function contactRemoteNickname(c: ContactRaw | undefined): string {
+  if (!c) return "";
+  const v = c.remote_nickname ?? (c as { remoteNickname?: string }).remoteNickname;
+  return typeof v === "string" ? v.trim() : "";
+}
+
+/** 好友/單聊頭像旁顯示名：備註優先，其次對方 remote_nickname，最後 fallback */
+function contactDisplayTitle(
+  c: ContactRaw | undefined,
+  peerID: string,
+  fallback?: string
+): string {
+  if (!c) return fallback || shortPeer(peerID);
+  const remark = (c.nickname || "").trim();
+  if (remark) return remark;
+  const remote = contactRemoteNickname(c);
+  if (remote) return remote;
+  return fallback || shortPeer(peerID);
+}
+
 function displayName(contacts: ContactRaw[], peerID: string, fallback?: string): string {
   const contact = contacts.find(c => c.peer_id === peerID);
-  if (contact && contact.nickname) return contact.nickname;
-  return fallback || shortPeer(peerID);
+  return contactDisplayTitle(contact, peerID, fallback);
+}
+
+function pickTrimmedString(obj: any, keys: string[]): string {
+  if (!obj || typeof obj !== "object") return "";
+  for (const k of keys) {
+    const v = obj[k];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+/** 兼容 /api/v1/chat/me、profile：嵌套 me/user/profile；本地暱稱後端常用 remote_nickname */
+function normalizeChatMe(data: any, fallbackPeerId?: string): Me | null {
+  if (data == null || typeof data !== "object") return null;
+  const root = data;
+  const src =
+    data.me && typeof data.me === "object"
+      ? data.me
+      : data.user && typeof data.user === "object"
+        ? data.user
+        : data.profile && typeof data.profile === "object"
+          ? data.profile
+          : data;
+
+  const peer_id =
+    pickTrimmedString(src, ["peer_id", "peerId", "peerID"]) ||
+    pickTrimmedString(root, ["peer_id", "peerId", "peerID"]) ||
+    (fallbackPeerId ? String(fallbackPeerId).trim() : "");
+
+  if (!peer_id) return null;
+
+  const nickname =
+    pickTrimmedString(src, [
+      "remote_nickname",
+      "remoteNickname",
+      "nickname",
+      "display_name",
+      "displayName",
+      "name",
+      "nick"
+    ]) ||
+    pickTrimmedString(root, [
+      "remote_nickname",
+      "remoteNickname",
+      "nickname",
+      "display_name",
+      "displayName",
+      "name",
+      "nick"
+    ]);
+
+  const chat_kex_pub =
+    pickTrimmedString(src, ["chat_kex_pub", "chatKexPub", "kex_pub"]) ||
+    pickTrimmedString(root, ["chat_kex_pub", "chatKexPub", "kex_pub"]);
+
+  const avatar =
+    pickTrimmedString(src, ["avatar", "avatar_url", "avatarUrl"]) ||
+    pickTrimmedString(root, ["avatar", "avatar_url", "avatarUrl"]);
+
+  const bio =
+    pickTrimmedString(src, ["bio", "intro", "description"]) ||
+    pickTrimmedString(root, ["bio", "intro", "description"]);
+
+  const me: Me = { peer_id };
+  if (nickname) {
+    me.nickname = nickname;
+    me.remote_nickname = nickname;
+  }
+  if (chat_kex_pub) me.chat_kex_pub = chat_kex_pub;
+  if (avatar) me.avatar = avatar;
+  if (bio) me.bio = bio;
+  return me;
 }
 
 function textAvatarLetter(name: string): string {
@@ -621,10 +802,16 @@ const App: React.FC = () => {
     () =>
       contactsRaw.map(c => ({
         id: c.peer_id,
-        name: c.nickname || shortPeer(c.peer_id),
-        remark: c.nickname || "",
+        name: contactDisplayTitle(c, c.peer_id, shortPeer(c.peer_id)),
+        remark: (c.nickname || "").trim(),
+        remoteNickname: contactRemoteNickname(c),
         avatarUrl: avatarUrl(c.avatar),
         bio: c.bio || "",
+        chatKexPub: (
+          c.chat_kex_pub ||
+          (c as unknown as { chatKexPub?: string }).chatKexPub ||
+          ""
+        ).trim(),
         lastSeen: formatTime(c.last_seen_at),
         blocked: !!c.blocked
       })),
@@ -635,7 +822,9 @@ const App: React.FC = () => {
   const threads = useMemo(
     () =>
       [
-        ...conversations.map(conv => ({
+        ...conversations
+          .filter(conv => (conv.state || "active") === "active")
+          .map(conv => ({
           id: conv.conversation_id,
           kind: "direct" as ThreadKind,
           peerId: conv.peer_id,
@@ -690,6 +879,10 @@ const App: React.FC = () => {
   const [wsConnected, setWsConnected] = useState(false);
 
   const [isMobile, setIsMobile] = useState(false);
+  const isMobileRef = React.useRef(isMobile);
+  React.useEffect(() => {
+    isMobileRef.current = isMobile;
+  }, [isMobile]);
   const [mobileView, setMobileView] = useState<"list" | "chat">("list");
   const [contactsMobileView, setContactsMobileView] = useState<"list" | "detail">(
     "list"
@@ -703,6 +896,13 @@ const App: React.FC = () => {
     kind: ThreadKind;
     threadId: string;
     msgId: string;
+  }>(null);
+  const [listItemMenu, setListItemMenu] = useState<null | {
+    x: number;
+    y: number;
+    kind: "contact" | "conversation";
+    id: string;
+    title: string;
   }>(null);
   const [selectedGroupDetails, setSelectedGroupDetails] = useState<GroupDetails | null>(
     null
@@ -755,7 +955,7 @@ const App: React.FC = () => {
   // 自动删除（retention）选择弹窗
   const [retentionModalOpen, setRetentionModalOpen] = useState(false);
   const [retentionUnit, setRetentionUnit] = useState<
-    "month" | "week" | "day" | "hour" | "off"
+    "month" | "week" | "day" | "hour" | "minute" | "off"
   >(
     "off"
   );
@@ -869,9 +1069,10 @@ const App: React.FC = () => {
           get<GroupRaw[]>("/api/v1/groups"),
           get<FriendRequestRaw[]>("/api/v1/chat/requests")
         ]);
-        setMe(meRes || null);
-        setMeNicknameDraft(meRes?.nickname || "");
-        setMeBioDraft(meRes?.bio || "");
+        const meNormalized = normalizeChatMe(meRes);
+        setMe(meNormalized);
+        setMeNicknameDraft(meNormalized?.nickname || "");
+        setMeBioDraft(meNormalized?.bio || "");
         setContactsRaw(normalizeEntityList<ContactRaw>(contactsRes, ["contacts"]));
         setConversations(
           normalizeEntityList<ConversationRaw>(convs, ["conversations"])
@@ -882,9 +1083,15 @@ const App: React.FC = () => {
         if (Array.isArray(contactsRes) && contactsRes.length > 0) {
           setSelectedContactId(contactsRes[0].peer_id);
         }
-      if (Array.isArray(convs) && convs.length > 0) {
-          setSelectedThreadId(convs[0].conversation_id);
-          setSelectedThreadKind("direct");
+        if (Array.isArray(convs) && convs.length > 0) {
+          const activeConvs = convs.filter(c => (c.state || "active") === "active");
+          if (activeConvs.length > 0) {
+            setSelectedThreadId(activeConvs[0].conversation_id);
+            setSelectedThreadKind("direct");
+          } else if (Array.isArray(grps) && grps.length > 0) {
+            setSelectedThreadId(grps[0].group_id);
+            setSelectedThreadKind("group");
+          }
         } else if (Array.isArray(grps) && grps.length > 0) {
           setSelectedThreadId(grps[0].group_id);
           setSelectedThreadKind("group");
@@ -1114,6 +1321,10 @@ const App: React.FC = () => {
     type?: string;
     kind?: ThreadKind | string;
     conversation_id?: string;
+    request_id?: string;
+    from_peer_id?: string;
+    to_peer_id?: string;
+    state?: string;
     at_unix_millis?: number;
   };
 
@@ -1166,13 +1377,66 @@ const App: React.FC = () => {
         } catch {
           return;
         }
-        if (activeTabRef.current !== "chat") return;
-        const sel = selectedThreadRef.current;
-        if (!sel.id) return;
-        if (!evt?.kind || !evt?.conversation_id) return;
+        if (!evt?.type) return;
 
-        if (evt.kind === sel.kind && evt.conversation_id === sel.id) {
-          loadThreadMessages(sel.kind, sel.id, { silent: true }).catch(() => null);
+        // 新消息：只在当前打开的会话匹配时刷新（避免无关刷屏）
+        if (evt.type === "message") {
+          if (activeTabRef.current !== "chat") return;
+          const sel = selectedThreadRef.current;
+          if (!sel.id) return;
+          if (!evt?.kind || !evt?.conversation_id) return;
+
+          if (evt.kind === sel.kind && evt.conversation_id === sel.id) {
+            loadThreadMessages(sel.kind, sel.id, { silent: true }).catch(() => null);
+          }
+          return;
+        }
+
+        // 好友请求：刷新 requests；accepted 时同时刷新会话列表并切到对应聊天窗口
+        if (evt.type === "friend_request") {
+          const state = (evt.state || "").toLowerCase();
+          const accepted = state === "accepted";
+          const rejected = state === "rejected" || state === "denied";
+          const convIDFromEvt = evt.conversation_id || null;
+
+          const reload = async () => {
+            const [nextReqs, nextContacts, nextConvs] = await Promise.all([
+              get<FriendRequestRaw[]>("/api/v1/chat/requests").catch(() => []),
+              accepted ? get<ContactRaw[]>("/api/v1/chat/contacts").catch(() => []) : Promise.resolve([] as ContactRaw[]),
+              // accepted/rejected 都需要刷新会话列表（会话 state 可能会变化，前端需要隐藏/切走）
+              (accepted || rejected)
+                ? get<ConversationRaw[]>("/api/v1/chat/conversations").catch(() => [])
+                : Promise.resolve([] as ConversationRaw[]),
+            ]);
+
+            setRequestsRaw(normalizeEntityList<FriendRequestRaw>(nextReqs, ["requests"]));
+            if (accepted) {
+              setContactsRaw(normalizeEntityList<ContactRaw>(nextContacts, ["contacts"]));
+              setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
+
+              if (convIDFromEvt) {
+                setSelectedThreadId(convIDFromEvt);
+                setSelectedThreadKind("direct");
+                setActiveTab("chat");
+                if (isMobileRef.current) setMobileView("chat");
+                loadThreadMessages("direct", convIDFromEvt, { silent: true }).catch(() => null);
+              }
+            } else if (rejected) {
+              setConversations(normalizeEntityList<ConversationRaw>(nextConvs, ["conversations"]));
+              if (convIDFromEvt && selectedThreadRef.current.id === convIDFromEvt) {
+                // 当前聊天已不再是好友关系：切到第一个仍为 active 的会话。
+                const activeConvs = (nextConvs || []).filter(c => (c.state || "active") === "active");
+                setSelectedThreadId(activeConvs[0]?.conversation_id || null);
+                setSelectedThreadKind("direct");
+              }
+              const shouldAlert = !!convIDFromEvt && selectedThreadRef.current.id === convIDFromEvt;
+              if (shouldAlert) {
+                alert("对方尚未建立好友关系，请重新添加好友。");
+              }
+            }
+          };
+
+          reload().catch(() => null);
         }
       };
     };
@@ -1251,16 +1515,35 @@ const App: React.FC = () => {
         setMessages(Array.isArray(list) ? list : []);
         setGroups(Array.isArray(grps) ? grps : []);
       } else {
+        const currentConv = conversations.find(c => c.conversation_id === selectedThreadId) || null;
+        const currentActive = (currentConv?.state || "active") === "active";
+        let targetConversationId = selectedThreadId;
+        if (!currentActive) {
+          const peerId = currentConv?.peer_id || selectedContactId || null;
+          const activeConv = peerId
+            ? conversations.find(
+                c => c.peer_id === peerId && (c.state || "active") === "active"
+              )
+            : undefined;
+          if (!activeConv?.conversation_id) {
+            alert("对方尚未建立好友关系，请重新添加好友。");
+            return;
+          }
+          targetConversationId = activeConv.conversation_id;
+          setSelectedThreadId(targetConversationId);
+          setSelectedThreadKind("direct");
+        }
+
         await post(
           `/api/v1/chat/conversations/${encodeURIComponent(
-            selectedThreadId
+            targetConversationId
           )}/messages`,
           { text }
         );
         const [list, convs] = await Promise.all([
           get<DirectMessage[]>(
             `/api/v1/chat/conversations/${encodeURIComponent(
-              selectedThreadId
+              targetConversationId
             )}/messages`
           ),
           get<ConversationRaw[]>("/api/v1/chat/conversations")
@@ -1306,17 +1589,44 @@ const App: React.FC = () => {
 
       const form = new FormData();
       form.append("file", file);
+      let targetConversationId = selectedThreadId;
+      if (selectedThreadKind !== "group") {
+        const currentConv =
+          conversations.find(c => c.conversation_id === selectedThreadId) || null;
+        const currentActive = (currentConv?.state || "active") === "active";
+        if (!currentActive) {
+          const peerId = currentConv?.peer_id || selectedContactId || null;
+          const activeConv = peerId
+            ? conversations.find(
+                c => c.peer_id === peerId && (c.state || "active") === "active"
+              )
+            : undefined;
+          if (!activeConv?.conversation_id) {
+            alert("对方尚未建立好友关系，请重新添加好友。");
+            return;
+          }
+          targetConversationId = activeConv.conversation_id;
+          setSelectedThreadId(targetConversationId);
+          setSelectedThreadKind("direct");
+        }
+      }
+
       const path =
         selectedThreadKind === "group"
           ? `/api/v1/groups/${encodeURIComponent(selectedThreadId)}/files`
-          : `/api/v1/chat/conversations/${encodeURIComponent(selectedThreadId)}/files`;
+          : `/api/v1/chat/conversations/${encodeURIComponent(
+              targetConversationId
+            )}/files`;
 
       const resp = await fetch(api(path), { method: "POST", body: form });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error((data as any).error || resp.statusText);
 
       setFileSending(null);
-      await loadThreadMessages(selectedThreadKind, selectedThreadId);
+      await loadThreadMessages(
+        selectedThreadKind,
+        selectedThreadKind === "group" ? selectedThreadId : targetConversationId
+      );
       if (selectedThreadKind === "group") {
         const grps = await get<GroupRaw[]>("/api/v1/groups");
         setGroups(normalizeEntityList<GroupRaw>(grps, ["groups"]));
@@ -1381,6 +1691,17 @@ const App: React.FC = () => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [msgMenu, closeMsgMenu]);
+
+  const closeListItemMenu = React.useCallback(() => setListItemMenu(null), []);
+
+  useEffect(() => {
+    if (!listItemMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeListItemMenu();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [listItemMenu, closeListItemMenu]);
 
   useEffect(() => {
     if (!plusMenuOpen) return;
@@ -1461,6 +1782,30 @@ const App: React.FC = () => {
       };
     },
     [openMsgMenuAt]
+  );
+
+  const openListItemMenuAt = React.useCallback(
+    (
+      x: number,
+      y: number,
+      kind: "contact" | "conversation",
+      id: string,
+      title: string
+    ) => {
+      const pad = 8;
+      const w = 200;
+      const h = 96;
+      const maxX = Math.max(pad, window.innerWidth - w - pad);
+      const maxY = Math.max(pad, window.innerHeight - h - pad);
+      setListItemMenu({
+        x: Math.min(Math.max(pad, x), maxX),
+        y: Math.min(Math.max(pad, y), maxY),
+        kind,
+        id,
+        title
+      });
+    },
+    []
   );
 
   const handlePasteMaybeSendImage = async (e: React.ClipboardEvent) => {
@@ -2125,6 +2470,81 @@ const App: React.FC = () => {
     );
   };
 
+  const renderListItemMenu = () => {
+    if (!listItemMenu) return null;
+    return (
+      <div
+        onClick={closeListItemMenu}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 10000
+        }}
+      >
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            position: "fixed",
+            left: listItemMenu.x,
+            top: listItemMenu.y,
+            width: 200,
+            borderRadius: 12,
+            background: "rgba(17,24,39,0.98)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            boxShadow: "0 18px 60px rgba(0,0,0,0.45)",
+            padding: 6
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              const { kind, id, title } = listItemMenu;
+              closeListItemMenu();
+              if (kind === "contact") {
+                void handleDeleteContact(id, title);
+              } else {
+                void handleDeleteConversation(id, title);
+              }
+            }}
+            style={{
+              width: "100%",
+              padding: "10px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "rgba(248,81,73,0.12)",
+              color: "#fecaca",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 700,
+              textAlign: "left"
+            }}
+          >
+            {listItemMenu.kind === "contact" ? "删除联系人" : "删除会话"}
+          </button>
+          <button
+            type="button"
+            onClick={closeListItemMenu}
+            style={{
+              width: "100%",
+              marginTop: 6,
+              padding: "10px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.10)",
+              background: "transparent",
+              color: "#e5e7eb",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 600,
+              textAlign: "left"
+            }}
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const openGroupThread = async (groupId: string) => {
     setSelectedThreadId(groupId);
     setSelectedThreadKind("group");
@@ -2184,8 +2604,62 @@ const App: React.FC = () => {
     }
   };
 
+  const handleDeleteContact = async (peerId: string, title: string) => {
+    const label = title.trim() || shortPeer(peerId);
+    if (
+      !window.confirm(
+        `确定删除联系人「${label}」？删除后将从联系人列表移除，并移除与该好友的私聊会话。`
+      )
+    )
+      return;
+    try {
+      await deleteChatResource(`/api/v1/chat/contacts/${encodeURIComponent(peerId)}`);
+    } catch (err: any) {
+      console.error("删除联系人失败:", err);
+      alert("删除联系人失败：" + (err?.message || String(err)));
+      return;
+    }
+    setConversations(prev => {
+      const conv = prev.find(c => c.peer_id === peerId);
+      const convId = conv?.conversation_id;
+      const sel = selectedThreadRef.current;
+      if (convId && sel.kind === "direct" && sel.id === convId) {
+        setSelectedThreadId(null);
+        if (isMobileRef.current) setMobileView("list");
+      }
+      return prev.filter(c => c.peer_id !== peerId);
+    });
+    setContactsRaw(prev => prev.filter(c => c.peer_id !== peerId));
+    setSelectedContactId(prev => {
+      if (prev === peerId && isMobileRef.current) setContactsMobileView("list");
+      return prev === peerId ? null : prev;
+    });
+  };
+
+  const handleDeleteConversation = async (conversationId: string, title: string) => {
+    const label = title.trim() || "该会话";
+    if (!window.confirm(`确定删除私聊会话「${label}」？`)) return;
+    try {
+      await deleteChatResource(
+        `/api/v1/chat/conversations/${encodeURIComponent(conversationId)}`
+      );
+    } catch (err: any) {
+      console.error("删除会话失败:", err);
+      alert("删除会话失败：" + (err?.message || String(err)));
+      return;
+    }
+    setConversations(prev => prev.filter(c => c.conversation_id !== conversationId));
+    const sel = selectedThreadRef.current;
+    if (sel.kind === "direct" && sel.id === conversationId) {
+      setSelectedThreadId(null);
+      if (isMobileRef.current) setMobileView("list");
+    }
+  };
+
   const handleStartChatFromContact = async (peerId: string) => {
-    const existing = conversations.find(c => c.peer_id === peerId);
+    const existing = conversations.find(
+      c => c.peer_id === peerId && (c.state || "active") === "active"
+    );
     if (existing) {
       setSelectedThreadId(existing.conversation_id);
       setSelectedThreadKind("direct");
@@ -2223,7 +2697,9 @@ const App: React.FC = () => {
 
       if (peerId) {
         const existing = Array.isArray(nextConvs)
-          ? nextConvs.find(c => c.peer_id === peerId)
+          ? nextConvs.find(
+              c => c.peer_id === peerId && (c.state || "active") === "active"
+            )
           : undefined;
         if (existing?.conversation_id) {
           setSelectedThreadId(existing.conversation_id);
@@ -2355,13 +2831,21 @@ const App: React.FC = () => {
 
   const handleSaveMyProfile = async () => {
     try {
-      const updated = await post<Me>("/api/v1/chat/profile", {
-        nickname: meNicknameDraft.trim(),
+      const nick = meNicknameDraft.trim();
+      const updated = await post<any>("/api/v1/chat/profile", {
+        nickname: nick,
+        remote_nickname: nick,
         bio: meBioDraft.trim()
       });
-      setMe(updated || null);
-      setMeNicknameDraft(updated?.nickname || "");
-      setMeBioDraft(updated?.bio || "");
+      const nextMe = normalizeChatMe(updated, me?.peer_id);
+      if (nextMe) {
+        setMe(prev => ({ ...(prev || nextMe), ...nextMe }));
+        setMeNicknameDraft(nextMe.nickname ?? meNicknameDraft.trim());
+        setMeBioDraft(nextMe.bio ?? meBioDraft.trim());
+      } else {
+        setMeNicknameDraft(meNicknameDraft.trim());
+        setMeBioDraft(meBioDraft.trim());
+      }
       alert("已更新我的名片");
     } catch (err: any) {
       console.error("保存名片失败:", err);
@@ -2385,9 +2869,22 @@ const App: React.FC = () => {
                       (thread as any).avatarUrl
                     : (thread as any).avatarUrl;
                 const src = resolveAvatarSrc(rawSrc);
+                const directRowMenuHandlers =
+                  thread.kind === "direct"
+                    ? createListRowMenuHandlers((cx, cy) =>
+                        openListItemMenuAt(
+                          cx,
+                          cy,
+                          "conversation",
+                          thread.id,
+                          thread.title
+                        )
+                      )
+                    : null;
                 return (
                   <div
                     key={`${thread.kind}:${thread.id}`}
+                    {...(directRowMenuHandlers || {})}
                     onClick={() => {
                       setSelectedThreadId(thread.id);
                       setSelectedThreadKind(thread.kind);
@@ -2566,9 +3063,17 @@ const App: React.FC = () => {
                               ? peerStatusMap.get(peerId) || null
                               : null;
                             const label = (() => {
-                              const s = (status?.state || status?.status || "").toLowerCase();
+                              // backend /api/v1/chat/peers/:id/status returns `connectedness`
+                              // (libp2p Connectedness String). Older code may also use `state/status`.
+                              const s = (
+                                status?.connectedness ||
+                                status?.state ||
+                                status?.status ||
+                                ""
+                              ).toString().toLowerCase();
                               if (!s) return "未知";
                               if (s.includes("direct_ok") || s.includes("direct")) return "直连可用";
+                              if (s.includes("connected")) return "直连可用";
                               if (s.includes("relay")) return "通过中继";
                               if (s.includes("offline")) return "离线";
                               return s;
@@ -3227,7 +3732,10 @@ const App: React.FC = () => {
               ) : (
                 pendingRequests.map(r => {
                   const peerId = r.from_peer_id || "";
-                  const title = r.nickname || shortPeer(peerId || r.request_id);
+                  const title =
+                    (r.remote_nickname || "").trim() ||
+                    (r.nickname || "").trim() ||
+                    shortPeer(peerId || r.request_id);
                   return (
                     <div
                       key={r.request_id}
@@ -3320,6 +3828,9 @@ const App: React.FC = () => {
               {contacts.map(c => (
                 <div
                   key={c.id}
+                  {...createListRowMenuHandlers((cx, cy) =>
+                    openListItemMenuAt(cx, cy, "contact", c.id, c.name)
+                  )}
                   onClick={() => {
                     setSelectedContactId(c.id);
                     if (isMobile) setContactsMobileView("detail");
@@ -3418,6 +3929,18 @@ const App: React.FC = () => {
                       style={{
                         fontSize: 12,
                         opacity: 0.8,
+                        marginTop: 6,
+                        whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word"
+                      }}
+                    >
+                      对方昵称：{selectedContact.remoteNickname || "（无）"}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        opacity: 0.8,
                         whiteSpace: "pre-wrap",
                         overflowWrap: "anywhere",
                         wordBreak: "break-word",
@@ -3462,6 +3985,61 @@ const App: React.FC = () => {
                       >
                         复制
                       </button>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        opacity: 0.8,
+                        marginTop: 6,
+                        whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 8
+                      }}
+                    >
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        Chat KEX：
+                        {(selectedContact as { chatKexPub?: string }).chatKexPub || "-"}
+                      </span>
+                      {(selectedContact as { chatKexPub?: string }).chatKexPub ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const kex = (selectedContact as { chatKexPub?: string }).chatKexPub;
+                            if (!kex) return;
+                            if (navigator.clipboard?.writeText) {
+                              navigator.clipboard.writeText(kex).catch(() => {});
+                            } else {
+                              try {
+                                const ta = document.createElement("textarea");
+                                ta.value = kex;
+                                ta.style.position = "fixed";
+                                ta.style.left = "-9999px";
+                                document.body.appendChild(ta);
+                                ta.select();
+                                document.execCommand("copy");
+                                document.body.removeChild(ta);
+                              } catch {
+                                // ignore
+                              }
+                            }
+                          }}
+                          style={{
+                            padding: "2px 6px",
+                            borderRadius: 6,
+                            border: "1px solid rgba(255,255,255,0.24)",
+                            background: "transparent",
+                            color: "#e5e7eb",
+                            fontSize: 11,
+                            cursor: "pointer",
+                            flexShrink: 0
+                          }}
+                        >
+                          复制
+                        </button>
+                      ) : null}
                     </div>
                     <div
                       style={{
@@ -3601,6 +4179,17 @@ const App: React.FC = () => {
         />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 18, fontWeight: 600 }}>我的名片</div>
+          <div
+            style={{
+              fontSize: 16,
+              fontWeight: 600,
+              marginTop: 6,
+              color: "#e6edf3",
+              opacity: meNicknameDraft.trim() ? 1 : 0.55
+            }}
+          >
+            昵称：{meNicknameDraft.trim() || "（未设置）"}
+          </div>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginTop: 4 }}>
             <div
               style={{
@@ -3841,6 +4430,7 @@ const App: React.FC = () => {
       ) : null}
 
       {renderMsgMenu()}
+      {renderListItemMenu()}
       {renderPlusMenu()}
       {renderModal(
         addFriendOpen,
@@ -4021,8 +4611,10 @@ const App: React.FC = () => {
                     const q = createGroupMemberQuery.trim().toLowerCase();
                     if (!q) return true;
                     return (
-                      c.name.toLowerCase().includes(q) ||
-                      c.id.toLowerCase().includes(q)
+                      (c.name || "").toLowerCase().includes(q) ||
+                      (c.remark || "").toLowerCase().includes(q) ||
+                      (c.remoteNickname || "").toLowerCase().includes(q) ||
+                      (c.id || "").toLowerCase().includes(q)
                     );
                   })
                   .map(c => {
@@ -4763,6 +5355,7 @@ const App: React.FC = () => {
             {(
               [
                 ["off", "关闭"],
+                ["minute", "分钟"],
                 ["hour", "小时"],
                 ["day", "天"],
                 ["week", "一周"],
@@ -4798,7 +5391,17 @@ const App: React.FC = () => {
             ) : (
               <>
                 <div style={{ fontSize: 13, marginBottom: 6 }}>
-                  数量（{retentionUnit === "hour" ? "小时" : retentionUnit === "day" ? "天" : retentionUnit === "week" ? "周" : "月"}）
+                  数量（
+                  {retentionUnit === "minute"
+                    ? "分钟"
+                    : retentionUnit === "hour"
+                      ? "小时"
+                      : retentionUnit === "day"
+                        ? "天"
+                        : retentionUnit === "week"
+                          ? "周"
+                          : "月"}
+                  ）
                 </div>
                 <input
                   type="number"
@@ -4816,7 +5419,8 @@ const App: React.FC = () => {
                   }}
                 />
                 <div style={{ fontSize: 12, opacity: 0.7, marginTop: 8 }}>
-                  换算：1 小时=60 分钟，1 天=1440 分钟，1 周=10080 分钟，1 月按 30 天近似。
+                  换算：所选单位为分钟时直接保存；1 小时=60 分钟，1 天=1440 分钟，1
+                  周=10080 分钟，1 月按 30 天近似。
                 </div>
               </>
             )}
@@ -4999,8 +5603,10 @@ const App: React.FC = () => {
                               const q = groupInviteQuery.trim().toLowerCase();
                               if (!q) return true;
                               return (
-                                c.name.toLowerCase().includes(q) ||
-                                c.id.toLowerCase().includes(q)
+                                (c.name || "").toLowerCase().includes(q) ||
+                                (c.remark || "").toLowerCase().includes(q) ||
+                                (c.remoteNickname || "").toLowerCase().includes(q) ||
+                                (c.id || "").toLowerCase().includes(q)
                               );
                             })
                             .map(c => {
