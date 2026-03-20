@@ -10,7 +10,7 @@ export {
   formatTimeFromMs,
   relativeTime
 } from "./time";
-export { deliveryStatusText } from "./delivery";
+export { deliveryStatusText, formatDeliverySummary } from "./delivery";
 export {
   peekLastMessagePlaintext,
   peekConversationPreview,

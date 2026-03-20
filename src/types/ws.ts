@@ -27,6 +27,11 @@ export type WsChatEvent = {
   counter?: number;
   transport_mode?: string;
   message_state?: string;
+  /** 私聊送達時間（Unix 毫秒，見 mesh-proxy chat.md） */
+  delivered_at_unix_millis?: number;
+  delivered_at?: string;
+  /** 群聊成員送達彙總 */
+  delivery_summary?: unknown;
   created_at_unix_millis?: number;
   epoch?: number;
   sender_seq?: number;

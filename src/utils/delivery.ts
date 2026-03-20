@@ -31,3 +31,18 @@ export function deliveryStatusText(state?: string, deliveredAt?: string): string
   }
   return label;
 }
+
+/** 群聊 delivery_summary 簡短展示 */
+export function formatDeliverySummary(summary: unknown): string {
+  if (summary == null) return "";
+  if (typeof summary === "string") return summary.trim();
+  if (typeof summary === "number" || typeof summary === "boolean") {
+    return String(summary);
+  }
+  try {
+    const s = JSON.stringify(summary);
+    return s.length > 120 ? s.slice(0, 120) + "…" : s;
+  } catch {
+    return "";
+  }
+}

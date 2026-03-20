@@ -36,6 +36,8 @@ export interface UseChatWebSocketParams {
   onIncomingChatMessage?: (raw: Record<string, unknown>) => void;
   /** 若後端已帶完整訊息欄位，返回 true 則不再 silent 拉取 /messages */
   mergeMessageFromWs?: (evt: WsChatEvent) => boolean;
+  /** type === message_state：依 msg_id 更新當前線程內既有訊息 */
+  onMessageState?: (raw: Record<string, unknown>) => void;
 }
 
 /**
@@ -57,7 +59,8 @@ export function useChatWebSocket({
   isMobileRef,
   scheduleRefreshConversationList,
   onIncomingChatMessage,
-  mergeMessageFromWs
+  mergeMessageFromWs,
+  onMessageState
 }: UseChatWebSocketParams) {
   useEffect(() => {
     if (activeTab !== "chat") return;
@@ -109,6 +112,16 @@ export function useChatWebSocket({
           return;
         }
         if (!evt?.type) return;
+
+        if (evt.type === "message_state") {
+          if (activeTabRef.current !== "chat") return;
+          try {
+            onMessageState?.(evt as unknown as Record<string, unknown>);
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
 
         if (evt.type === "message") {
           if (activeTabRef.current !== "chat") return;
@@ -207,6 +220,7 @@ export function useChatWebSocket({
     isMobileRef,
     scheduleRefreshConversationList,
     onIncomingChatMessage,
-    mergeMessageFromWs
+    mergeMessageFromWs,
+    onMessageState
   ]);
 }

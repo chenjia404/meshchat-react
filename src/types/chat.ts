@@ -56,6 +56,8 @@ export interface DirectMessage {
   sender_peer_id?: string;
   receiver_peer_id?: string;
   conversation_id?: string;
+  /** 與後端 WS message_state 對齊；可與 state 並存 */
+  message_state?: string;
   state?: string;
   delivered_at?: string;
   plaintext?: string;
@@ -69,8 +71,12 @@ export interface GroupMessage {
   sender_peer_id: string;
   group_id?: string;
   msg_type?: string;
+  /** 與後端 WS message_state 對齊 */
+  message_state?: string;
   state?: string;
   delivered_at?: string;
+  /** 群成員送達彙總（WS message_state 更新） */
+  delivery_summary?: unknown;
   plaintext?: string;
   mime_type?: string;
   file_name?: string;

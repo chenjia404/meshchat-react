@@ -444,6 +444,80 @@ const App: React.FC = () => {
     [setMessages]
   );
 
+  /** WS type === message_state：對應 msg_id 更新 state / delivered_at / delivery_summary */
+  const applyMessageStateFromWs = useCallback(
+    (raw: Record<string, unknown>) => {
+      const msgId = raw.msg_id;
+      if (typeof msgId !== "string" || !msgId.trim()) return;
+
+      const messageState =
+        typeof raw.message_state === "string" ? raw.message_state : undefined;
+
+      const convId = raw.conversation_id;
+      const groupId = raw.group_id;
+
+      let deliveredAt: string | undefined;
+      if (
+        typeof raw.delivered_at_unix_millis === "number" &&
+        Number.isFinite(raw.delivered_at_unix_millis)
+      ) {
+        deliveredAt = new Date(raw.delivered_at_unix_millis).toISOString();
+      } else if (
+        typeof raw.delivered_at === "string" &&
+        raw.delivered_at.trim()
+      ) {
+        deliveredAt = raw.delivered_at;
+      }
+
+      const deliverySummary = raw.delivery_summary;
+
+      setMessages(prev => {
+        const sel = selectedThreadRef.current;
+        if (!sel.id) return prev;
+
+        if (
+          sel.kind === "direct" &&
+          typeof convId === "string" &&
+          convId === sel.id
+        ) {
+          return prev.map(m => {
+            if (!("msg_id" in m) || !("direction" in m)) return m;
+            const dm = m as DirectMessage;
+            if (dm.msg_id !== msgId) return m;
+            return {
+              ...dm,
+              state: messageState ?? dm.state,
+              message_state: messageState ?? dm.message_state,
+              ...(deliveredAt ? { delivered_at: deliveredAt } : {})
+            };
+          });
+        }
+
+        if (
+          sel.kind === "group" &&
+          typeof groupId === "string" &&
+          groupId === sel.id
+        ) {
+          return prev.map(m => {
+            if (!("msg_id" in m) || !("sender_peer_id" in m)) return m;
+            const gm = m as GroupMessage;
+            if (gm.msg_id !== msgId) return m;
+            return {
+              ...gm,
+              state: messageState ?? gm.state,
+              message_state: messageState ?? gm.message_state,
+              ...(deliverySummary !== undefined
+                ? { delivery_summary: deliverySummary }
+                : {})
+            };
+          });
+        }
+
+        return prev;
+      });
+    },
+    [setMessages]
+  );
 
   useChatWebSocket({
     activeTab,
@@ -461,7 +535,8 @@ const App: React.FC = () => {
     isMobileRef,
     scheduleRefreshConversationList,
     onIncomingChatMessage: handleIncomingChatMessage,
-    mergeMessageFromWs
+    mergeMessageFromWs,
+    onMessageState: applyMessageStateFromWs
   });
 
   const openRetentionModal = () => {

@@ -22,6 +22,7 @@ import {
   formatTime,
   formatTimeFromMs,
   deliveryStatusText,
+  formatDeliverySummary,
   displayName,
   safeJsonParse,
   isImageMime,
@@ -651,6 +652,9 @@ export function ChatTab(props: ChatTabProps) {
                     const deliveryText = fromMe
                       ? deliveryStatusText(m.state, m.delivered_at)
                       : "";
+                    const deliverySummaryText = fromMe
+                      ? formatDeliverySummary(m.delivery_summary)
+                      : "";
                     const senderName = fromMe
                       ? "我"
                       : displayName(
@@ -698,7 +702,12 @@ export function ChatTab(props: ChatTabProps) {
                             }}
                           >
                             {senderName} · {formatTime(m.created_at)}
-                            {fromMe && deliveryText ? ` · ${deliveryText}` : ""}
+                            {fromMe &&
+                            (deliveryText || deliverySummaryText)
+                              ? ` · ${[deliveryText, deliverySummaryText]
+                                  .filter(Boolean)
+                                  .join(" · ")}`
+                              : ""}
                           </div>
                           <div
                             style={{
