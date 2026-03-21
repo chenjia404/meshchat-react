@@ -649,11 +649,14 @@ export function ChatTab(props: ChatTabProps) {
                 ) : selectedThreadKind === "group" ? (
                   (messages as GroupMessage[]).map(m => {
                     const fromMe = !!me && m.sender_peer_id === me.peer_id;
-                    const deliveryText = fromMe
-                      ? deliveryStatusText(m.state, m.delivered_at)
-                      : "";
                     const deliverySummaryText = fromMe
                       ? formatDeliverySummary(m.delivery_summary)
+                      : "";
+                    /** 有成員送達彙總時只顯示彙總，避免與 state 的「已送达」重複 */
+                    const deliveryText = fromMe
+                      ? deliverySummaryText
+                        ? ""
+                        : deliveryStatusText(m.state, m.delivered_at)
                       : "";
                     const senderName = fromMe
                       ? "我"

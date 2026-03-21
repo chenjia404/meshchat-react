@@ -27,6 +27,13 @@ export function coalesceUnreadCount(raw: unknown): number {
   return Math.min(999999, Math.floor(x));
 }
 
+/** ISO 時間字串轉毫秒，用於會話列表依最近活動排序 */
+function lastActivityMs(iso?: string | null): number {
+  if (!iso) return 0;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : 0;
+}
+
 export function buildContactAvatarMap(contactsRaw: ContactRaw[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const c of contactsRaw) {
@@ -61,10 +68,13 @@ export function buildChatThreadListItems(
   contactsRaw: ContactRaw[],
   contactAvatarMap: Map<string, string>
 ): ChatThreadListItem[] {
-  return [
-    ...conversations
-      .filter(conv => (conv.state || "active") === "active")
-      .map(conv => ({
+  type Row = { item: ChatThreadListItem; activityMs: number };
+
+  const directRows: Row[] = conversations
+    .filter(conv => (conv.state || "active") === "active")
+    .map(conv => ({
+      activityMs: lastActivityMs(conv.updated_at),
+      item: {
         id: conv.conversation_id,
         kind: "direct" as ThreadKind,
         peerId: conv.peer_id,
@@ -78,16 +88,25 @@ export function buildChatThreadListItems(
         unreadCount: coalesceUnreadCount(
           (conv as ConversationRaw & Record<string, unknown>).unread_count
         )
-      })),
-    ...groups.map(g => ({
+      }
+    }));
+
+  const groupRows: Row[] = groups.map(g => ({
+    activityMs: lastActivityMs(g.last_message_at || g.updated_at),
+    item: {
       id: g.group_id,
       kind: "group" as ThreadKind,
       title: g.title || "未命名群",
       subtitle: `成员 ${g.member_count || 0}`,
       lastMessage: peekGroupPreview(g as GroupRaw & Record<string, unknown>),
       lastTime: relativeTime(g.last_message_at || g.updated_at)
-    })),
-    ...meshGroups.map(mg => ({
+    }
+  }));
+
+  const meshRows: Row[] = meshGroups.map(mg => ({
+    /** 無時間欄位時排於後方；有則可與私聊/群混排 */
+    activityMs: 0,
+    item: {
       id: mg.threadId,
       kind: "meshserver_group" as ThreadKind,
       title: mg.title,
@@ -96,6 +115,17 @@ export function buildChatThreadListItems(
       lastTime: "",
       connectionName: mg.connectionName,
       myUserId: mg.myUserId
-    }))
-  ];
+    }
+  }));
+
+  const merged = [...directRows, ...groupRows, ...meshRows];
+  merged.sort((a, b) => {
+    if (b.activityMs !== a.activityMs) return b.activityMs - a.activityMs;
+    const tie = `${a.item.kind}:${a.item.id}`.localeCompare(
+      `${b.item.kind}:${b.item.id}`
+    );
+    return tie;
+  });
+
+  return merged.map(r => r.item);
 }
