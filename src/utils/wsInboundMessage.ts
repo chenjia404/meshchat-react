@@ -42,6 +42,10 @@ export function directMessageFromWsPayload(
     plaintext: typeof raw.plaintext === "string" ? raw.plaintext : "",
     mime_type: typeof raw.mime_type === "string" ? raw.mime_type : undefined,
     file_name: typeof raw.file_name === "string" ? raw.file_name : undefined,
+    file_size:
+      typeof raw.file_size === "number" && Number.isFinite(raw.file_size)
+        ? raw.file_size
+        : undefined,
     created_at: createdAtFromWs(raw)
   };
 }
@@ -64,6 +68,10 @@ export function groupMessageFromWsPayload(
     plaintext: typeof raw.plaintext === "string" ? raw.plaintext : "",
     mime_type: typeof raw.mime_type === "string" ? raw.mime_type : undefined,
     file_name: typeof raw.file_name === "string" ? raw.file_name : undefined,
+    file_size:
+      typeof raw.file_size === "number" && Number.isFinite(raw.file_size)
+        ? raw.file_size
+        : undefined,
     created_at: createdAtFromWs(raw)
   };
 }

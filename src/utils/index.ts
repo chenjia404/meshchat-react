@@ -11,6 +11,7 @@ export {
   relativeTime
 } from "./time";
 export { deliveryStatusText, formatDeliverySummary } from "./delivery";
+export { formatFileSize } from "./fileSize";
 export {
   peekLastMessagePlaintext,
   peekConversationPreview,

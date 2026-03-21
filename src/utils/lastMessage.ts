@@ -1,16 +1,23 @@
 import type { ConversationRaw } from "../types/chat";
 import type { GroupRaw } from "../types/group";
+import { formatFileSize } from "./fileSize";
 
 /** 從單則訊息產生側欄預覽（文字 / 檔名） */
 export function previewFromChatMessage(msg: {
   plaintext?: string;
   file_name?: string;
   mime_type?: string;
+  file_size?: number;
 }): string {
   const pt = (msg.plaintext || "").trim();
   if (pt) return pt;
   const fn = (msg.file_name || "").trim();
-  if (fn) return `[文件] ${fn}`;
+  if (fn) {
+    const size = formatFileSize(msg.file_size);
+    return size ? `[文件] ${fn} · ${size}` : `[文件] ${fn}`;
+  }
+  const size = formatFileSize(msg.file_size);
+  if (size) return `[文件] ${size}`;
   return "";
 }
 
@@ -39,7 +46,11 @@ export function extractInlinePreviewFromWsPayload(
   const nested = peekLastMessagePlaintext(raw.last_message);
   if (nested) return nested;
   const fn = typeof raw.file_name === "string" ? raw.file_name.trim() : "";
-  if (fn) return `[文件] ${fn}`;
+  const size = formatFileSize(
+    typeof raw.file_size === "number" ? raw.file_size : undefined
+  );
+  if (fn) return size ? `[文件] ${fn} · ${size}` : `[文件] ${fn}`;
+  if (size) return `[文件] ${size}`;
   return "";
 }
 

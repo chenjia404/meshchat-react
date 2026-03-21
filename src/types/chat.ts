@@ -63,6 +63,7 @@ export interface DirectMessage {
   plaintext?: string;
   mime_type?: string;
   file_name?: string;
+  file_size?: number;
   created_at?: string;
 }
 
@@ -80,6 +81,7 @@ export interface GroupMessage {
   plaintext?: string;
   mime_type?: string;
   file_name?: string;
+  file_size?: number;
   created_at?: string;
 }
 

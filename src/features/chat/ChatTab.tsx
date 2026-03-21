@@ -27,6 +27,7 @@ import {
   safeJsonParse,
   isImageMime,
   isVideoMime,
+  formatFileSize,
   extractMeshserverImageSrc,
   looksLikeImageSrc
 } from "../../utils";
@@ -38,6 +39,112 @@ function threadLastMessagePreview(text: string | undefined, maxChars = 36): stri
   if (!t) return "";
   if (t.length <= maxChars) return t;
   return t.slice(0, maxChars) + "…";
+}
+
+function FileMessageContent(props: {
+  downloadUrl: string;
+  fileName?: string;
+  mimeType?: string;
+  fileSize?: number;
+}) {
+  const fileName = (props.fileName || "file").trim() || "file";
+  const mimeType = (props.mimeType || "").trim();
+  const sizeLabel = formatFileSize(props.fileSize);
+  const meta = [mimeType, sizeLabel].filter(Boolean).join(" · ");
+  const isImage = isImageMime(mimeType);
+  const isVideo = isVideoMime(mimeType);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 220 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 12,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(88,166,255,0.18)",
+            color: "#bfdbfe",
+            fontSize: 18,
+            fontWeight: 800
+          }}
+        >
+          ⬇
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap"
+            }}
+          >
+            {fileName}
+          </div>
+          <div
+            style={{
+              marginTop: 3,
+              fontSize: 12,
+              opacity: 0.72,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap"
+            }}
+          >
+            {meta || "文件消息"}
+          </div>
+        </div>
+      </div>
+
+      {isImage ? (
+        <img
+          src={props.downloadUrl}
+          alt={fileName}
+          loading="lazy"
+          style={{
+            maxWidth: "100%",
+            borderRadius: 10,
+            display: "block",
+            maxHeight: 320,
+            objectFit: "contain",
+            background: "rgba(255,255,255,0.03)"
+          }}
+        />
+      ) : isVideo ? (
+        <video
+          src={props.downloadUrl}
+          controls
+          style={{
+            maxWidth: "100%",
+            borderRadius: 10,
+            display: "block",
+            maxHeight: 320,
+            background: "rgba(0,0,0,0.18)"
+          }}
+        />
+      ) : null}
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <a
+          href={props.downloadUrl}
+          download={fileName}
+          style={{
+            color: "#93c5fd",
+            textDecoration: "none",
+            fontWeight: 700,
+            fontSize: 13
+          }}
+        >
+          下载文件
+        </a>
+      </div>
+    </div>
+  );
 }
 
 export interface ChatThreadListItem {
@@ -732,35 +839,12 @@ export function ChatTab(props: ChatTabProps) {
                             )}
                           >
                             {isFile && m.group_id ? (
-                              isImageMime(m.mime_type) ? (
-                                <img
-                                  src={groupFileUrl(m.group_id, m.msg_id)}
-                                  alt={m.file_name || "image"}
-                                  style={{
-                                    maxWidth: "100%",
-                                    borderRadius: 10,
-                                    display: "block"
-                                  }}
-                                />
-                              ) : isVideoMime(m.mime_type) ? (
-                                <video
-                                  src={groupFileUrl(m.group_id, m.msg_id)}
-                                  controls
-                                  style={{
-                                    maxWidth: "100%",
-                                    borderRadius: 10,
-                                    display: "block"
-                                  }}
-                                />
-                              ) : (
-                                <a
-                                  href={groupFileUrl(m.group_id, m.msg_id)}
-                                  download={m.file_name || "file"}
-                                  style={{ color: "#93c5fd" }}
-                                >
-                                  下载档案：{m.file_name || "file"}
-                                </a>
-                              )
+                              <FileMessageContent
+                                downloadUrl={groupFileUrl(m.group_id, m.msg_id)}
+                                fileName={m.file_name}
+                                mimeType={m.mime_type}
+                                fileSize={m.file_size}
+                              />
                             ) : text ? (
                               text
                             ) : (
@@ -946,35 +1030,12 @@ export function ChatTab(props: ChatTabProps) {
                             )}
                           >
                             {isFile && m.conversation_id ? (
-                              isImageMime(m.mime_type) ? (
-                                <img
-                                  src={directFileUrl(m.conversation_id, m.msg_id)}
-                                  alt={m.file_name || "image"}
-                                  style={{
-                                    maxWidth: "100%",
-                                    borderRadius: 10,
-                                    display: "block"
-                                  }}
-                                />
-                              ) : isVideoMime(m.mime_type) ? (
-                                <video
-                                  src={directFileUrl(m.conversation_id, m.msg_id)}
-                                  controls
-                                  style={{
-                                    maxWidth: "100%",
-                                    borderRadius: 10,
-                                    display: "block"
-                                  }}
-                                />
-                              ) : (
-                                <a
-                                  href={directFileUrl(m.conversation_id, m.msg_id)}
-                                  download={m.file_name || "file"}
-                                  style={{ color: "#93c5fd" }}
-                                >
-                                  下载档案：{m.file_name || "file"}
-                                </a>
-                              )
+                              <FileMessageContent
+                                downloadUrl={directFileUrl(m.conversation_id, m.msg_id)}
+                                fileName={m.file_name}
+                                mimeType={m.mime_type}
+                                fileSize={m.file_size}
+                              />
                             ) : text ? (
                               text
                             ) : (
