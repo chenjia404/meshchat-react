@@ -22,6 +22,31 @@ const btn: React.CSSProperties = {
   textAlign: "left"
 };
 
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fallback below */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface MessageContextMenuProps {
   menu: MessageMenuState | null;
   onClose: () => void;
@@ -36,7 +61,7 @@ export function MessageContextMenu({
   onForward
 }: MessageContextMenuProps) {
   if (!menu) return null;
-  const showForward = menu.forwardText.trim().length > 0;
+  const hasContent = menu.forwardText.trim().length > 0;
   const showRevoke = menu.canRevoke;
   return (
     <div
@@ -61,7 +86,25 @@ export function MessageContextMenu({
           padding: 6
         }}
       >
-        {showForward ? (
+        {hasContent ? (
+          <button
+            type="button"
+            onClick={async () => {
+              const t = menu.forwardText;
+              onClose();
+              const ok = await copyToClipboard(t);
+              if (!ok) alert("复制失败");
+            }}
+            style={{
+              ...btn,
+              background: "rgba(255,255,255,0.06)",
+              color: "#e5e7eb"
+            }}
+          >
+            复制
+          </button>
+        ) : null}
+        {hasContent ? (
           <button
             type="button"
             onClick={async () => {
@@ -71,6 +114,7 @@ export function MessageContextMenu({
             }}
             style={{
               ...btn,
+              marginTop: 6,
               background: "rgba(88,166,255,0.14)",
               color: "#bfdbfe",
               fontWeight: 700
@@ -89,7 +133,7 @@ export function MessageContextMenu({
             }}
             style={{
               ...btn,
-              marginTop: showForward ? 6 : 0,
+              marginTop: hasContent ? 6 : 0,
               background: "rgba(248,81,73,0.12)",
               color: "#fecaca",
               fontWeight: 700
@@ -103,7 +147,7 @@ export function MessageContextMenu({
           onClick={onClose}
           style={{
             ...btn,
-            marginTop: showForward || showRevoke ? 6 : 0,
+            marginTop: hasContent || showRevoke ? 6 : 0,
             background: "transparent",
             color: "#e5e7eb"
           }}

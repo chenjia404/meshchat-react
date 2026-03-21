@@ -1101,7 +1101,10 @@ const App: React.FC = () => {
       const row = 44;
       const gap = 6;
       let h = 12 + row;
-      if (forwardText.trim()) h += row + gap;
+      if (forwardText.trim()) {
+        h += row + gap;
+        h += row + gap;
+      }
       if (canRevoke) h += row + gap;
       const maxX = Math.max(pad, window.innerWidth - w - pad);
       const maxY = Math.max(pad, window.innerHeight - h - pad);
