@@ -204,7 +204,7 @@ export interface ChatTabProps {
     kind: ThreadKind,
     threadId: string,
     msgId: string,
-    enabled: boolean
+    opts: { canRevoke: boolean; forwardText: string }
   ) => {
     onPointerDown: React.PointerEventHandler;
     onPointerUp: React.PointerEventHandler;
@@ -659,6 +659,16 @@ export function ChatTab(props: ChatTabProps) {
                       !!imageSrc || Number((m as any).message_type) === 2;
                     const showCaption =
                       !!caption && !(isImage && looksLikeImageSrc(caption));
+                    const meshForwardText = (() => {
+                      if (isImage && imageSrc) {
+                        return caption
+                          ? `${caption}\n${imageSrc}`
+                          : `[图片]\n${imageSrc}`;
+                      }
+                      if (caption) return caption;
+                      if (isImage) return "[图片消息]";
+                      return "";
+                    })();
                     return (
                       <div
                         key={m.message_id}
@@ -710,6 +720,12 @@ export function ChatTab(props: ChatTabProps) {
                               overflowWrap: "anywhere",
                               wordBreak: "break-word"
                             }}
+                            {...createLongPressHandlers(
+                              "meshserver_group",
+                              selectedThreadId || "",
+                              m.message_id,
+                              { canRevoke: false, forwardText: meshForwardText }
+                            )}
                           >
                             {isImage ? (
                               imageSrc ? (
@@ -775,6 +791,14 @@ export function ChatTab(props: ChatTabProps) {
                     const letter = textAvatarLetter(senderName);
                     const isFile = m.msg_type === "group_chat_file";
                     const text = m.plaintext || "";
+                    const gid = m.group_id || selectedThreadId || "";
+                    const groupForwardText =
+                      isFile && gid
+                        ? `[文件] ${(m.file_name || "file").trim() || "file"}\n${groupFileUrl(
+                            gid,
+                            m.msg_id
+                          )}`
+                        : text;
                     return (
                       <div
                         key={m.msg_id}
@@ -833,9 +857,12 @@ export function ChatTab(props: ChatTabProps) {
                             }}
                             {...createLongPressHandlers(
                               "group",
-                              m.group_id || selectedThreadId || "",
+                              gid,
                               m.msg_id,
-                              canRevokeGroupMessage(m.sender_peer_id)
+                              {
+                                canRevoke: canRevokeGroupMessage(m.sender_peer_id),
+                                forwardText: groupForwardText
+                              }
                             )}
                           >
                             {isFile && m.group_id ? (
@@ -865,6 +892,14 @@ export function ChatTab(props: ChatTabProps) {
                     const letter = textAvatarLetter(senderName);
                     const isFile = m.msg_type === "chat_file";
                     const text = m.plaintext || "";
+                    const convId = m.conversation_id || selectedThreadId || "";
+                    const directForwardText =
+                      isFile && convId
+                        ? `[文件] ${(m.file_name || "file").trim() || "file"}\n${directFileUrl(
+                            convId,
+                            m.msg_id
+                          )}`
+                        : text;
                     const isGroupInvite = m.msg_type === "group_invite_notice";
                     const invite = isGroupInvite
                       ? safeJsonParse<{
@@ -1024,9 +1059,12 @@ export function ChatTab(props: ChatTabProps) {
                             }}
                             {...createLongPressHandlers(
                               "direct",
-                              m.conversation_id || selectedThreadId || "",
+                              convId,
                               m.msg_id,
-                              !!fromMe
+                              {
+                                canRevoke: !!fromMe,
+                                forwardText: directForwardText
+                              }
                             )}
                           >
                             {isFile && m.conversation_id ? (

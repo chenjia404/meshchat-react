@@ -7,16 +7,37 @@ export type MessageMenuState = {
   kind: ThreadKind;
   threadId: string;
   msgId: string;
+  forwardText: string;
+  canRevoke: boolean;
+};
+
+const btn: React.CSSProperties = {
+  width: "100%",
+  padding: "10px 10px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.10)",
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 600,
+  textAlign: "left"
 };
 
 export interface MessageContextMenuProps {
   menu: MessageMenuState | null;
   onClose: () => void;
   onRevoke: (kind: ThreadKind, threadId: string, msgId: string) => void | Promise<void>;
+  onForward: (forwardText: string) => void | Promise<void>;
 }
 
-export function MessageContextMenu({ menu, onClose, onRevoke }: MessageContextMenuProps) {
+export function MessageContextMenu({
+  menu,
+  onClose,
+  onRevoke,
+  onForward
+}: MessageContextMenuProps) {
   if (!menu) return null;
+  const showForward = menu.forwardText.trim().length > 0;
+  const showRevoke = menu.canRevoke;
   return (
     <div
       onClick={onClose}
@@ -40,43 +61,51 @@ export function MessageContextMenu({ menu, onClose, onRevoke }: MessageContextMe
           padding: 6
         }}
       >
-        <button
-          type="button"
-          onClick={async () => {
-            const { kind, threadId, msgId } = menu;
-            onClose();
-            await onRevoke(kind, threadId, msgId);
-          }}
-          style={{
-            width: "100%",
-            padding: "10px 10px",
-            borderRadius: 10,
-            border: "1px solid rgba(255,255,255,0.10)",
-            background: "rgba(248,81,73,0.12)",
-            color: "#fecaca",
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: 700,
-            textAlign: "left"
-          }}
-        >
-          撤回
-        </button>
+        {showForward ? (
+          <button
+            type="button"
+            onClick={async () => {
+              const t = menu.forwardText;
+              onClose();
+              await onForward(t);
+            }}
+            style={{
+              ...btn,
+              background: "rgba(88,166,255,0.14)",
+              color: "#bfdbfe",
+              fontWeight: 700
+            }}
+          >
+            转发
+          </button>
+        ) : null}
+        {showRevoke ? (
+          <button
+            type="button"
+            onClick={async () => {
+              const { kind, threadId, msgId } = menu;
+              onClose();
+              await onRevoke(kind, threadId, msgId);
+            }}
+            style={{
+              ...btn,
+              marginTop: showForward ? 6 : 0,
+              background: "rgba(248,81,73,0.12)",
+              color: "#fecaca",
+              fontWeight: 700
+            }}
+          >
+            撤回
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onClose}
           style={{
-            width: "100%",
-            marginTop: 6,
-            padding: "10px 10px",
-            borderRadius: 10,
-            border: "1px solid rgba(255,255,255,0.10)",
+            ...btn,
+            marginTop: showForward || showRevoke ? 6 : 0,
             background: "transparent",
-            color: "#e5e7eb",
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: 600,
-            textAlign: "left"
+            color: "#e5e7eb"
           }}
         >
           取消

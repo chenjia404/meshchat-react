@@ -72,11 +72,12 @@ import {
 import { FallbackAvatar, textAvatarLetter } from "./components/FallbackAvatar";
 import { BottomTabItem } from "./components/BottomTabItem";
 import { PlusMenu } from "./components/PlusMenu";
-import { MessageContextMenu } from "./components/MessageContextMenu";
+import { MessageContextMenu, type MessageMenuState } from "./components/MessageContextMenu";
+import { ForwardMessageModal } from "./components/ForwardMessageModal";
 import { ListItemContextMenu } from "./components/ListItemContextMenu";
 import { MeTab } from "./features/me";
 import { ContactsTab } from "./features/contacts";
-import { ChatTab } from "./features/chat";
+import { ChatTab, type ChatThreadListItem } from "./features/chat";
 import {
   AddFriendModal,
   CreateGroupModal,
@@ -211,13 +212,9 @@ const App: React.FC = () => {
   const [fileSending, setFileSending] = useState<null | { text: string; error?: boolean }>(
     null
   );
-  const [msgMenu, setMsgMenu] = useState<null | {
-    x: number;
-    y: number;
-    kind: ThreadKind;
-    threadId: string;
-    msgId: string;
-  }>(null);
+  const [msgMenu, setMsgMenu] = useState<MessageMenuState | null>(null);
+  const [forwardDraft, setForwardDraft] = useState<string | null>(null);
+  const [forwardBusy, setForwardBusy] = useState(false);
   const [listItemMenu, setListItemMenu] = useState<null | {
     x: number;
     y: number;
@@ -770,6 +767,153 @@ const App: React.FC = () => {
     }
   };
 
+  const forwardTextToThreadOnce = useCallback(
+    async (targetKind: ThreadKind, targetThreadId: string, text: string) => {
+      const body = text.trim();
+      if (!body) return;
+      if (targetKind === "meshserver_group") {
+        const thread = meshGroups.find(t => t.threadId === targetThreadId) || null;
+        const connectionName = thread?.connectionName;
+        if (!thread || !connectionName) {
+          throw new Error("未找到 meshserver 频道上下文");
+        }
+        await post(
+          `/api/v1/meshserver/channels/${encodeURIComponent(
+            targetThreadId
+          )}/messages?connection=${encodeURIComponent(connectionName)}`,
+          {
+            client_msg_id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            message_type: "text",
+            text: body
+          }
+        );
+        if (
+          selectedThreadKind === "meshserver_group" &&
+          selectedThreadId === targetThreadId
+        ) {
+          await loadThreadMessages("meshserver_group", targetThreadId);
+        }
+        markThreadAsRead("meshserver_group", targetThreadId);
+        return;
+      }
+      if (targetKind === "group") {
+        await post(`/api/v1/groups/${encodeURIComponent(targetThreadId)}/messages`, {
+          text: body
+        });
+        const [list, grps] = await Promise.all([
+          get<GroupMessage[]>(
+            `/api/v1/groups/${encodeURIComponent(targetThreadId)}/messages`
+          ),
+          get<GroupRaw[]>("/api/v1/groups")
+        ]);
+        if (selectedThreadKind === "group" && selectedThreadId === targetThreadId) {
+          setMessages(Array.isArray(list) ? list : []);
+        }
+        setGroups(
+          withOptimisticGroupPreview(
+            Array.isArray(grps) ? grps : [],
+            targetThreadId,
+            body
+          )
+        );
+        markThreadAsRead("group", targetThreadId);
+        return;
+      }
+      let targetConversationId = targetThreadId;
+      const currentConv =
+        conversations.find(c => c.conversation_id === targetThreadId) || null;
+      const currentActive = (currentConv?.state || "active") === "active";
+      if (!currentActive) {
+        const peerId = currentConv?.peer_id || null;
+        const activeConv = peerId
+          ? conversations.find(
+              c => c.peer_id === peerId && (c.state || "active") === "active"
+            )
+          : undefined;
+        if (!activeConv?.conversation_id) {
+          throw new Error("对方尚未建立好友关系，请重新添加好友。");
+        }
+        targetConversationId = activeConv.conversation_id;
+      }
+      await post(
+        `/api/v1/chat/conversations/${encodeURIComponent(
+          targetConversationId
+        )}/messages`,
+        { text: body }
+      );
+      const [list, convs] = await Promise.all([
+        get<DirectMessage[]>(
+          `/api/v1/chat/conversations/${encodeURIComponent(
+            targetConversationId
+          )}/messages`
+        ),
+        get<ConversationRaw[]>("/api/v1/chat/conversations")
+      ]);
+      if (
+        selectedThreadKind === "direct" &&
+        selectedThreadId === targetConversationId
+      ) {
+        setMessages(Array.isArray(list) ? list : []);
+      }
+      setConversations(
+        withOptimisticConversationPreview(
+          Array.isArray(convs) ? convs : [],
+          targetConversationId,
+          body
+        )
+      );
+      markThreadAsRead("direct", targetConversationId);
+    },
+    [
+      meshGroups,
+      conversations,
+      selectedThreadKind,
+      selectedThreadId,
+      loadThreadMessages,
+      markThreadAsRead,
+      setMessages,
+      setGroups,
+      setConversations
+    ]
+  );
+
+  const forwardTextToThreads = useCallback(
+    async (targets: ChatThreadListItem[], text: string) => {
+      const body = text.trim();
+      if (!body || targets.length === 0) return;
+      setForwardBusy(true);
+      try {
+        let ok = 0;
+        const failures: string[] = [];
+        for (const t of targets) {
+          try {
+            await forwardTextToThreadOnce(t.kind, t.id, body);
+            ok++;
+          } catch (err: any) {
+            console.error("转发失败:", err);
+            failures.push(`「${t.title}」: ${err?.message || String(err)}`);
+          }
+        }
+        if (failures.length === 0) {
+          alert(ok <= 1 ? "已转发" : `已转发到 ${ok} 个会话`);
+        } else if (ok > 0) {
+          alert(
+            `已成功 ${ok} 个；失败 ${failures.length} 个：\n${failures
+              .slice(0, 6)
+              .join("\n")}${failures.length > 6 ? "\n…" : ""}`
+          );
+        } else {
+          alert(
+            `转发失败：\n${failures.slice(0, 6).join("\n")}${failures.length > 6 ? "\n…" : ""}`
+          );
+        }
+      } finally {
+        setForwardBusy(false);
+      }
+    },
+    [forwardTextToThreadOnce]
+  );
+
   const sendFileForCurrentThread = async (file: File) => {
     if (!selectedThreadId) return;
     setFileSending({ text: `上传中：${file.name}` });
@@ -943,10 +1087,22 @@ const App: React.FC = () => {
   }, [plusMenuOpen]);
 
   const openMsgMenuAt = React.useCallback(
-    (x: number, y: number, kind: ThreadKind, threadId: string, msgId: string) => {
+    (
+      x: number,
+      y: number,
+      kind: ThreadKind,
+      threadId: string,
+      msgId: string,
+      forwardText: string,
+      canRevoke: boolean
+    ) => {
       const pad = 8;
       const w = 180;
-      const h = 92;
+      const row = 44;
+      const gap = 6;
+      let h = 12 + row;
+      if (forwardText.trim()) h += row + gap;
+      if (canRevoke) h += row + gap;
       const maxX = Math.max(pad, window.innerWidth - w - pad);
       const maxY = Math.max(pad, window.innerHeight - h - pad);
       setMsgMenu({
@@ -954,7 +1110,9 @@ const App: React.FC = () => {
         y: Math.min(Math.max(pad, y), maxY),
         kind,
         threadId,
-        msgId
+        msgId,
+        forwardText,
+        canRevoke
       });
     },
     []
@@ -965,7 +1123,7 @@ const App: React.FC = () => {
       kind: ThreadKind,
       threadId: string,
       msgId: string,
-      enabled: boolean
+      opts: { canRevoke: boolean; forwardText: string }
     ): {
       onPointerDown: React.PointerEventHandler;
       onPointerUp: React.PointerEventHandler;
@@ -973,6 +1131,8 @@ const App: React.FC = () => {
       onPointerMove: React.PointerEventHandler;
       onContextMenu: React.MouseEventHandler;
     } => {
+      const { canRevoke, forwardText } = opts;
+      const allowMenu = canRevoke || forwardText.trim().length > 0;
       let timer: number | null = null;
       let startX = 0;
       let startY = 0;
@@ -986,13 +1146,21 @@ const App: React.FC = () => {
 
       return {
         onPointerDown: (e) => {
-          if (!enabled) return;
+          if (!allowMenu) return;
           if (e.pointerType === "mouse") return; // 滑鼠用右键
           startX = e.clientX;
           startY = e.clientY;
           clear();
           timer = window.setTimeout(() => {
-            openMsgMenuAt(e.clientX, e.clientY, kind, threadId, msgId);
+            openMsgMenuAt(
+              e.clientX,
+              e.clientY,
+              kind,
+              threadId,
+              msgId,
+              forwardText,
+              canRevoke
+            );
             clear();
           }, 520);
         },
@@ -1005,9 +1173,17 @@ const App: React.FC = () => {
           if (dx > 10 || dy > 10) clear();
         },
         onContextMenu: (e) => {
-          if (!enabled) return;
+          if (!allowMenu) return;
           e.preventDefault();
-          openMsgMenuAt(e.clientX, e.clientY, kind, threadId, msgId);
+          openMsgMenuAt(
+            e.clientX,
+            e.clientY,
+            kind,
+            threadId,
+            msgId,
+            forwardText,
+            canRevoke
+          );
         }
       };
     },
@@ -1930,9 +2106,21 @@ const App: React.FC = () => {
       <MessageContextMenu
         menu={msgMenu}
         onClose={closeMsgMenu}
+        onForward={text => setForwardDraft(text)}
         onRevoke={async (kind, threadId, msgId) => {
           if (kind === "group") await revokeGroupMessage(threadId, msgId);
           else await revokeDirectMessage(threadId, msgId);
+        }}
+      />
+      <ForwardMessageModal
+        open={forwardDraft != null}
+        onClose={() => setForwardDraft(null)}
+        threads={threadsWithUnread}
+        busy={forwardBusy}
+        onConfirm={async picked => {
+          if (forwardDraft == null || picked.length === 0) return;
+          await forwardTextToThreads(picked, forwardDraft);
+          setForwardDraft(null);
         }}
       />
       <ListItemContextMenu
