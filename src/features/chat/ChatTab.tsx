@@ -16,6 +16,7 @@ import type {
   GroupMessage
 } from "../../types";
 import { FallbackAvatar, textAvatarLetter } from "../../components/FallbackAvatar";
+import { ImageLightbox } from "../../components/ImageLightbox";
 import { createListRowMenuHandlers } from "../../hooks/createListRowMenuHandlers";
 import {
   shortPeer,
@@ -46,6 +47,7 @@ function FileMessageContent(props: {
   fileName?: string;
   mimeType?: string;
   fileSize?: number;
+  onImagePreview?: (src: string, alt: string) => void;
 }) {
   const fileName = (props.fileName || "file").trim() || "file";
   const mimeType = (props.mimeType || "").trim();
@@ -106,13 +108,29 @@ function FileMessageContent(props: {
           src={props.downloadUrl}
           alt={fileName}
           loading="lazy"
+          role={props.onImagePreview ? "button" : undefined}
+          tabIndex={props.onImagePreview ? 0 : undefined}
+          onClick={e => {
+            if (!props.onImagePreview) return;
+            e.stopPropagation();
+            props.onImagePreview(props.downloadUrl, fileName);
+          }}
+          onKeyDown={e => {
+            if (!props.onImagePreview) return;
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              props.onImagePreview(props.downloadUrl, fileName);
+            }
+          }}
           style={{
             maxWidth: "100%",
             borderRadius: 10,
             display: "block",
             maxHeight: 320,
             objectFit: "contain",
-            background: "rgba(255,255,255,0.03)"
+            background: "rgba(255,255,255,0.03)",
+            cursor: props.onImagePreview ? "zoom-in" : "default"
           }}
         />
       ) : isVideo ? (
@@ -265,6 +283,11 @@ export function ChatTab(props: ChatTabProps) {
     markThreadAsRead
   } = props;
 
+  const [imagePreview, setImagePreview] = React.useState<{
+    src: string;
+    alt: string;
+  } | null>(null);
+
   const handleInputAreaDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -286,6 +309,12 @@ export function ChatTab(props: ChatTabProps) {
 
   return (
     <div style={{ height: "100%", position: "relative" }}>
+      <ImageLightbox
+        open={imagePreview != null}
+        src={imagePreview?.src ?? ""}
+        alt={imagePreview?.alt}
+        onClose={() => setImagePreview(null)}
+      />
       {(() => {
         const ListView = (
           <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -752,10 +781,30 @@ export function ChatTab(props: ChatTabProps) {
                                   <img
                                     src={imageSrc}
                                     alt={caption || "image"}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      setImagePreview({
+                                        src: imageSrc,
+                                        alt: caption || "image"
+                                      });
+                                    }}
+                                    onKeyDown={e => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setImagePreview({
+                                          src: imageSrc,
+                                          alt: caption || "image"
+                                        });
+                                      }
+                                    }}
                                     style={{
                                       maxWidth: "100%",
                                       borderRadius: 10,
-                                      display: "block"
+                                      display: "block",
+                                      cursor: "zoom-in"
                                     }}
                                   />
                                   {showCaption ? (
@@ -890,6 +939,9 @@ export function ChatTab(props: ChatTabProps) {
                                 fileName={m.file_name}
                                 mimeType={m.mime_type}
                                 fileSize={m.file_size}
+                                onImagePreview={(src, alt) =>
+                                  setImagePreview({ src, alt })
+                                }
                               />
                             ) : text ? (
                               text
@@ -1092,6 +1144,9 @@ export function ChatTab(props: ChatTabProps) {
                                 fileName={m.file_name}
                                 mimeType={m.mime_type}
                                 fileSize={m.file_size}
+                                onImagePreview={(src, alt) =>
+                                  setImagePreview({ src, alt })
+                                }
                               />
                             ) : text ? (
                               text
