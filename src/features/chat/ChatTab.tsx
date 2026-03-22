@@ -183,7 +183,7 @@ export interface ChatTabProps {
   setMobileView: (v: "list" | "chat") => void;
   selectedThread: ChatThreadListItem | null;
   selectedThreadAvatarUrl: string | undefined;
-  handlePasteMaybeSendImage: (e: React.ClipboardEvent) => void;
+  handlePasteMaybeSendFile: (e: React.ClipboardEvent) => void;
   setSelectedContactId: (id: string | null) => void;
   setContactsMobileView: (v: "list" | "detail") => void;
   setActiveTab: (tab: "chat" | "contacts" | "me") => void;
@@ -238,7 +238,7 @@ export function ChatTab(props: ChatTabProps) {
     setMobileView,
     selectedThread,
     selectedThreadAvatarUrl,
-    handlePasteMaybeSendImage,
+    handlePasteMaybeSendFile,
     setSelectedContactId,
     setContactsMobileView,
     setActiveTab,
@@ -264,6 +264,25 @@ export function ChatTab(props: ChatTabProps) {
     joinGroup,
     markThreadAsRead
   } = props;
+
+  const handleInputAreaDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleInputAreaDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer?.files;
+    if (!files?.length) return;
+    for (const file of Array.from(files)) {
+      if (selectedThreadKind === "meshserver_group" && !isImageMime(file.type)) {
+        alert("Mesh 频道仅支持图片文件");
+        continue;
+      }
+      void sendFileForCurrentThread(file);
+    }
+  };
 
   return (
     <div style={{ height: "100%", position: "relative" }}>
@@ -432,7 +451,7 @@ export function ChatTab(props: ChatTabProps) {
               overflow: "hidden",
               background: "rgba(255,255,255,0.02)"
             }}
-            onPaste={handlePasteMaybeSendImage}
+            onPaste={handlePasteMaybeSendFile}
           >
             {selectedThread ? (
               <>
@@ -1098,6 +1117,8 @@ export function ChatTab(props: ChatTabProps) {
                     flexShrink: 0,
                     borderTop: "1px solid rgba(255,255,255,0.08)"
                   }}
+                  onDragOver={handleInputAreaDragOver}
+                  onDrop={handleInputAreaDrop}
                 >
                   {selectedThreadKind === "meshserver_group" ? (
                     <div
@@ -1110,9 +1131,9 @@ export function ChatTab(props: ChatTabProps) {
                     >
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <MessageInput
-                          placeholder="输入讯息..."
+                          placeholder="输入讯息…（Shift+Enter 换行，可拖入图片）"
                           attachButton={false}
-                          onSend={handleSendMessage}
+                          onSend={(_h, textContent) => void handleSendMessage(textContent)}
                         />
                       </div>
                       <input
@@ -1152,9 +1173,9 @@ export function ChatTab(props: ChatTabProps) {
                     </div>
                   ) : (
                     <MessageInput
-                      placeholder="输入讯息..."
+                      placeholder="输入讯息…（Shift+Enter 换行，可拖入或粘贴文件）"
                       attachButton={false}
-                      onSend={handleSendMessage}
+                      onSend={(_h, textContent) => void handleSendMessage(textContent)}
                     />
                   )}
                 </div>

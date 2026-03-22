@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "@chatscope/chat-ui-kit-styles/dist/default/styles.min.css";
+import "./chat-input-overrides.css";
 import type {
   ThreadKind,
   Me,
@@ -1217,18 +1218,25 @@ const App: React.FC = () => {
     []
   );
 
-  const handlePasteMaybeSendImage = async (e: React.ClipboardEvent) => {
+  const handlePasteMaybeSendFile = async (e: React.ClipboardEvent) => {
     const dt = e.clipboardData;
     if (!dt?.items?.length) return;
-    const item = Array.from(dt.items).find(
-      it => it.kind === "file" && isImageMime(it.type)
-    );
-    if (!item) return;
-    const blob = item.getAsFile();
+    const fileItem = Array.from(dt.items).find(it => it.kind === "file");
+    if (!fileItem) return;
+    const blob = fileItem.getAsFile();
     if (!blob) return;
+    if (selectedThreadKind === "meshserver_group" && !isImageMime(blob.type)) {
+      alert("Mesh 频道仅支持粘贴图片");
+      return;
+    }
     e.preventDefault();
-    const file = new File([blob], `pasted-image-${Date.now()}.png`, {
-      type: blob.type || "image/png"
+    const name =
+      blob.name?.trim() ||
+      (isImageMime(blob.type)
+        ? `pasted-image-${Date.now()}.png`
+        : `pasted-file-${Date.now()}`);
+    const file = new File([blob], name, {
+      type: blob.type || "application/octet-stream"
     });
     await sendFileForCurrentThread(file);
   };
@@ -2015,7 +2023,7 @@ const App: React.FC = () => {
             setMobileView={setMobileView}
             selectedThread={selectedThread}
             selectedThreadAvatarUrl={selectedThreadAvatarUrl}
-            handlePasteMaybeSendImage={handlePasteMaybeSendImage}
+            handlePasteMaybeSendFile={handlePasteMaybeSendFile}
             setSelectedContactId={setSelectedContactId}
             setContactsMobileView={setContactsMobileView}
             setActiveTab={setActiveTab}

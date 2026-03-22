@@ -1,0 +1,11 @@
+/* 聊天輸入：加高可編輯區域，支援多行與拖曳調整高度（覆寫 chat-ui-kit 預設約 4 行上限） */
+.cs-message-input__content-editor-container {
+  max-height: min(50vh, 18rem) !important;
+}
+
+.cs-message-input__content-editor {
+  min-height: 2.75em;
+  max-height: min(48vh, 17rem);
+  overflow-y: auto !important;
+  resize: vertical;
+}
