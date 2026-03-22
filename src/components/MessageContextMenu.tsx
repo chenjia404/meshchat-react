@@ -1,6 +1,13 @@
 import React from "react";
 import type { ThreadKind } from "../types";
 
+/** 轉發檔案訊息時用於下載原檔再上傳到目標會話 */
+export type ForwardFilePayload = {
+  url: string;
+  fileName: string;
+  mimeType: string;
+};
+
 export type MessageMenuState = {
   x: number;
   y: number;
@@ -9,6 +16,8 @@ export type MessageMenuState = {
   msgId: string;
   forwardText: string;
   canRevoke: boolean;
+  /** 若為檔案類訊息（圖/視頻等），轉發時上傳二進位而非僅發文字 */
+  forwardFile?: ForwardFilePayload;
 };
 
 const btn: React.CSSProperties = {
@@ -51,7 +60,10 @@ export interface MessageContextMenuProps {
   menu: MessageMenuState | null;
   onClose: () => void;
   onRevoke: (kind: ThreadKind, threadId: string, msgId: string) => void | Promise<void>;
-  onForward: (forwardText: string) => void | Promise<void>;
+  onForward: (payload: {
+    text: string;
+    file?: ForwardFilePayload;
+  }) => void | Promise<void>;
 }
 
 export function MessageContextMenu({
@@ -61,7 +73,8 @@ export function MessageContextMenu({
   onForward
 }: MessageContextMenuProps) {
   if (!menu) return null;
-  const hasContent = menu.forwardText.trim().length > 0;
+  const hasContent =
+    menu.forwardText.trim().length > 0 || !!menu.forwardFile;
   const showRevoke = menu.canRevoke;
   return (
     <div
@@ -90,7 +103,10 @@ export function MessageContextMenu({
           <button
             type="button"
             onClick={async () => {
-              const t = menu.forwardText;
+              const t =
+                menu.forwardText.trim() ||
+                menu.forwardFile?.url ||
+                "";
               onClose();
               const ok = await copyToClipboard(t);
               if (!ok) alert("复制失败");
@@ -108,9 +124,11 @@ export function MessageContextMenu({
           <button
             type="button"
             onClick={async () => {
-              const t = menu.forwardText;
               onClose();
-              await onForward(t);
+              await onForward({
+                text: menu.forwardText,
+                file: menu.forwardFile
+              });
             }}
             style={{
               ...btn,

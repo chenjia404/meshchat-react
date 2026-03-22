@@ -73,7 +73,15 @@ import {
 import { FallbackAvatar, textAvatarLetter } from "./components/FallbackAvatar";
 import { BottomTabItem } from "./components/BottomTabItem";
 import { PlusMenu } from "./components/PlusMenu";
-import { MessageContextMenu, type MessageMenuState } from "./components/MessageContextMenu";
+import {
+  MessageContextMenu,
+  type MessageMenuState,
+  type ForwardFilePayload
+} from "./components/MessageContextMenu";
+
+type ForwardDraft =
+  | { kind: "text"; text: string }
+  | ({ kind: "file" } & ForwardFilePayload);
 import { ForwardMessageModal } from "./components/ForwardMessageModal";
 import { ListItemContextMenu } from "./components/ListItemContextMenu";
 import { MeTab } from "./features/me";
@@ -214,7 +222,7 @@ const App: React.FC = () => {
     null
   );
   const [msgMenu, setMsgMenu] = useState<MessageMenuState | null>(null);
-  const [forwardDraft, setForwardDraft] = useState<string | null>(null);
+  const [forwardDraft, setForwardDraft] = useState<ForwardDraft | null>(null);
   const [forwardBusy, setForwardBusy] = useState(false);
   const [listItemMenu, setListItemMenu] = useState<null | {
     x: number;
@@ -878,20 +886,169 @@ const App: React.FC = () => {
     ]
   );
 
-  const forwardTextToThreads = useCallback(
-    async (targets: ChatThreadListItem[], text: string) => {
-      const body = text.trim();
-      if (!body || targets.length === 0) return;
+  const postFileToTargetThread = useCallback(
+    async (targetKind: ThreadKind, targetThreadId: string, file: File) => {
+      if (targetKind === "meshserver_group") {
+        if (!isImageMime(file.type)) {
+          throw new Error("Mesh 频道仅支持图片文件");
+        }
+        const thread = meshGroups.find(t => t.threadId === targetThreadId) || null;
+        const connectionName = thread?.connectionName;
+        if (!thread || !connectionName) {
+          throw new Error("未找到 meshserver 频道上下文");
+        }
+        const form = new FormData();
+        form.append("image", file);
+        const url = `/api/v1/meshserver/channels/${encodeURIComponent(
+          targetThreadId
+        )}/messages/image?connection=${encodeURIComponent(connectionName)}`;
+        const resp = await fetch(api(url), { method: "POST", body: form });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error((data as any).error || resp.statusText);
+        if (
+          selectedThreadKind === "meshserver_group" &&
+          selectedThreadId === targetThreadId
+        ) {
+          await loadThreadMessages("meshserver_group", targetThreadId);
+        }
+        markThreadAsRead("meshserver_group", targetThreadId);
+        return;
+      }
+      if (targetKind === "group") {
+        const form = new FormData();
+        form.append("file", file);
+        const resp = await fetch(
+          api(`/api/v1/groups/${encodeURIComponent(targetThreadId)}/files`),
+          { method: "POST", body: form }
+        );
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error((data as any).error || resp.statusText);
+        if (selectedThreadKind === "group" && selectedThreadId === targetThreadId) {
+          const list = await get<GroupMessage[]>(
+            `/api/v1/groups/${encodeURIComponent(targetThreadId)}/messages`
+          );
+          setMessages(Array.isArray(list) ? list : []);
+        }
+        const grps = await get<GroupRaw[]>("/api/v1/groups");
+        setGroups(
+          withOptimisticGroupPreview(
+            Array.isArray(grps) ? grps : [],
+            targetThreadId,
+            `[文件] ${file.name}`
+          )
+        );
+        markThreadAsRead("group", targetThreadId);
+        return;
+      }
+      let targetConversationId = targetThreadId;
+      const currentConv =
+        conversations.find(c => c.conversation_id === targetThreadId) || null;
+      const currentActive = (currentConv?.state || "active") === "active";
+      if (!currentActive) {
+        const peerId = currentConv?.peer_id || null;
+        const activeConv = peerId
+          ? conversations.find(
+              c => c.peer_id === peerId && (c.state || "active") === "active"
+            )
+          : undefined;
+        if (!activeConv?.conversation_id) {
+          throw new Error("对方尚未建立好友关系，请重新添加好友。");
+        }
+        targetConversationId = activeConv.conversation_id;
+      }
+      const form = new FormData();
+      form.append("file", file);
+      const resp = await fetch(
+        api(
+          `/api/v1/chat/conversations/${encodeURIComponent(
+            targetConversationId
+          )}/files`
+        ),
+        { method: "POST", body: form }
+      );
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error((data as any).error || resp.statusText);
+      if (selectedThreadKind === "direct" && selectedThreadId === targetConversationId) {
+        const list = await get<DirectMessage[]>(
+          `/api/v1/chat/conversations/${encodeURIComponent(
+            targetConversationId
+          )}/messages`
+        );
+        setMessages(Array.isArray(list) ? list : []);
+      }
+      const convs = await get<ConversationRaw[]>("/api/v1/chat/conversations");
+      setConversations(
+        withOptimisticConversationPreview(
+          Array.isArray(convs) ? convs : [],
+          targetConversationId,
+          `[文件] ${file.name}`
+        )
+      );
+      markThreadAsRead("direct", targetConversationId);
+    },
+    [
+      meshGroups,
+      conversations,
+      selectedThreadKind,
+      selectedThreadId,
+      loadThreadMessages,
+      markThreadAsRead,
+      setMessages,
+      setGroups,
+      setConversations
+    ]
+  );
+
+  const forwardDraftToTargets = useCallback(
+    async (targets: ChatThreadListItem[], draft: ForwardDraft) => {
+      if (targets.length === 0) return;
       setForwardBusy(true);
       try {
+        if (draft.kind === "text") {
+          const body = draft.text.trim();
+          if (!body) return;
+          let ok = 0;
+          const failures: string[] = [];
+          for (const t of targets) {
+            try {
+              await forwardTextToThreadOnce(t.kind, t.id, body);
+              ok++;
+            } catch (err: any) {
+              console.error("转发失败:", err);
+              failures.push(`「${t.title}」: ${err?.message || String(err)}`);
+            }
+          }
+          if (failures.length === 0) {
+            alert(ok <= 1 ? "已转发" : `已转发到 ${ok} 个会话`);
+          } else if (ok > 0) {
+            alert(
+              `已成功 ${ok} 个；失败 ${failures.length} 个：\n${failures
+                .slice(0, 6)
+                .join("\n")}${failures.length > 6 ? "\n…" : ""}`
+            );
+          } else {
+            alert(
+              `转发失败：\n${failures.slice(0, 6).join("\n")}${failures.length > 6 ? "\n…" : ""}`
+            );
+          }
+          return;
+        }
+
+        const r = await fetch(draft.url, { credentials: "include" });
+        if (!r.ok) throw new Error(`下载原文件失败 (${r.status})`);
+        const blob = await r.blob();
+        const name = draft.fileName.trim() || "file";
+        const mime = draft.mimeType.trim() || blob.type || "application/octet-stream";
+        const file = new File([blob], name, { type: mime });
+
         let ok = 0;
         const failures: string[] = [];
         for (const t of targets) {
           try {
-            await forwardTextToThreadOnce(t.kind, t.id, body);
+            await postFileToTargetThread(t.kind, t.id, file);
             ok++;
           } catch (err: any) {
-            console.error("转发失败:", err);
+            console.error("转发文件失败:", err);
             failures.push(`「${t.title}」: ${err?.message || String(err)}`);
           }
         }
@@ -908,11 +1065,14 @@ const App: React.FC = () => {
             `转发失败：\n${failures.slice(0, 6).join("\n")}${failures.length > 6 ? "\n…" : ""}`
           );
         }
+      } catch (err: any) {
+        console.error("转发失败:", err);
+        alert("转发失败：" + (err?.message || String(err)));
       } finally {
         setForwardBusy(false);
       }
     },
-    [forwardTextToThreadOnce]
+    [forwardTextToThreadOnce, postFileToTargetThread]
   );
 
   const sendFileForCurrentThread = async (file: File) => {
@@ -1095,14 +1255,15 @@ const App: React.FC = () => {
       threadId: string,
       msgId: string,
       forwardText: string,
-      canRevoke: boolean
+      canRevoke: boolean,
+      forwardFile?: ForwardFilePayload
     ) => {
       const pad = 8;
       const w = 180;
       const row = 44;
       const gap = 6;
       let h = 12 + row;
-      if (forwardText.trim()) {
+      if (forwardText.trim() || forwardFile) {
         h += row + gap;
         h += row + gap;
       }
@@ -1116,7 +1277,8 @@ const App: React.FC = () => {
         threadId,
         msgId,
         forwardText,
-        canRevoke
+        canRevoke,
+        forwardFile
       });
     },
     []
@@ -1127,7 +1289,7 @@ const App: React.FC = () => {
       kind: ThreadKind,
       threadId: string,
       msgId: string,
-      opts: { canRevoke: boolean; forwardText: string }
+      opts: { canRevoke: boolean; forwardText: string; forwardFile?: ForwardFilePayload }
     ): {
       onPointerDown: React.PointerEventHandler;
       onPointerUp: React.PointerEventHandler;
@@ -1135,8 +1297,9 @@ const App: React.FC = () => {
       onPointerMove: React.PointerEventHandler;
       onContextMenu: React.MouseEventHandler;
     } => {
-      const { canRevoke, forwardText } = opts;
-      const allowMenu = canRevoke || forwardText.trim().length > 0;
+      const { canRevoke, forwardText, forwardFile } = opts;
+      const allowMenu =
+        canRevoke || forwardText.trim().length > 0 || !!forwardFile;
       let timer: number | null = null;
       let startX = 0;
       let startY = 0;
@@ -1163,7 +1326,8 @@ const App: React.FC = () => {
               threadId,
               msgId,
               forwardText,
-              canRevoke
+              canRevoke,
+              forwardFile
             );
             clear();
           }, 520);
@@ -1186,7 +1350,8 @@ const App: React.FC = () => {
             threadId,
             msgId,
             forwardText,
-            canRevoke
+            canRevoke,
+            forwardFile
           );
         }
       };
@@ -2117,7 +2282,13 @@ const App: React.FC = () => {
       <MessageContextMenu
         menu={msgMenu}
         onClose={closeMsgMenu}
-        onForward={text => setForwardDraft(text)}
+        onForward={({ text, file }) => {
+          if (file) {
+            setForwardDraft({ kind: "file", ...file });
+          } else {
+            setForwardDraft({ kind: "text", text });
+          }
+        }}
         onRevoke={async (kind, threadId, msgId) => {
           if (kind === "group") await revokeGroupMessage(threadId, msgId);
           else await revokeDirectMessage(threadId, msgId);
@@ -2130,7 +2301,7 @@ const App: React.FC = () => {
         busy={forwardBusy}
         onConfirm={async picked => {
           if (forwardDraft == null || picked.length === 0) return;
-          await forwardTextToThreads(picked, forwardDraft);
+          await forwardDraftToTargets(picked, forwardDraft);
           setForwardDraft(null);
         }}
       />

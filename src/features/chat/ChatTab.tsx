@@ -222,7 +222,11 @@ export interface ChatTabProps {
     kind: ThreadKind,
     threadId: string,
     msgId: string,
-    opts: { canRevoke: boolean; forwardText: string }
+    opts: {
+      canRevoke: boolean;
+      forwardText: string;
+      forwardFile?: { url: string; fileName: string; mimeType: string };
+    }
   ) => {
     onPointerDown: React.PointerEventHandler;
     onPointerUp: React.PointerEventHandler;
@@ -717,6 +721,14 @@ export function ChatTab(props: ChatTabProps) {
                       if (isImage) return "[图片消息]";
                       return "";
                     })();
+                    const meshForwardFile =
+                      isImage && imageSrc
+                        ? {
+                            url: imageSrc,
+                            fileName: `mesh-image-${m.message_id}.jpg`,
+                            mimeType: "image/jpeg"
+                          }
+                        : undefined;
                     return (
                       <div
                         key={m.message_id}
@@ -772,7 +784,11 @@ export function ChatTab(props: ChatTabProps) {
                               "meshserver_group",
                               selectedThreadId || "",
                               m.message_id,
-                              { canRevoke: false, forwardText: meshForwardText }
+                              {
+                                canRevoke: false,
+                                forwardText: meshForwardText,
+                                forwardFile: meshForwardFile
+                              }
                             )}
                           >
                             {isImage ? (
@@ -867,6 +883,15 @@ export function ChatTab(props: ChatTabProps) {
                             m.msg_id
                           )}`
                         : text;
+                    const groupForwardFile =
+                      isFile && gid
+                        ? {
+                            url: groupFileUrl(gid, m.msg_id),
+                            fileName: (m.file_name || "file").trim() || "file",
+                            mimeType:
+                              (m.mime_type || "").trim() || "application/octet-stream"
+                          }
+                        : undefined;
                     return (
                       <div
                         key={m.msg_id}
@@ -929,7 +954,8 @@ export function ChatTab(props: ChatTabProps) {
                               m.msg_id,
                               {
                                 canRevoke: canRevokeGroupMessage(m.sender_peer_id),
-                                forwardText: groupForwardText
+                                forwardText: groupForwardText,
+                                forwardFile: groupForwardFile
                               }
                             )}
                           >
@@ -971,6 +997,15 @@ export function ChatTab(props: ChatTabProps) {
                             m.msg_id
                           )}`
                         : text;
+                    const directForwardFile =
+                      isFile && convId
+                        ? {
+                            url: directFileUrl(convId, m.msg_id),
+                            fileName: (m.file_name || "file").trim() || "file",
+                            mimeType:
+                              (m.mime_type || "").trim() || "application/octet-stream"
+                          }
+                        : undefined;
                     const isGroupInvite = m.msg_type === "group_invite_notice";
                     const invite = isGroupInvite
                       ? safeJsonParse<{
@@ -1134,7 +1169,8 @@ export function ChatTab(props: ChatTabProps) {
                               m.msg_id,
                               {
                                 canRevoke: !!fromMe,
-                                forwardText: directForwardText
+                                forwardText: directForwardText,
+                                forwardFile: directForwardFile
                               }
                             )}
                           >
