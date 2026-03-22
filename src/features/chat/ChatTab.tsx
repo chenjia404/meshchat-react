@@ -28,6 +28,7 @@ import {
   safeJsonParse,
   isImageMime,
   isVideoMime,
+  isAudioMime,
   formatFileSize,
   extractMeshserverImageSrc,
   looksLikeImageSrc
@@ -55,6 +56,7 @@ function FileMessageContent(props: {
   const meta = [mimeType, sizeLabel].filter(Boolean).join(" · ");
   const isImage = isImageMime(mimeType);
   const isVideo = isVideoMime(mimeType);
+  const isAudio = isAudioMime(mimeType);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 220 }}>
@@ -74,7 +76,7 @@ function FileMessageContent(props: {
             fontWeight: 800
           }}
         >
-          ⬇
+          {isAudio ? "🎤" : "⬇"}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div
@@ -143,6 +145,20 @@ function FileMessageContent(props: {
             display: "block",
             maxHeight: 320,
             background: "rgba(0,0,0,0.18)"
+          }}
+        />
+      ) : isAudio ? (
+        <audio
+          src={props.downloadUrl}
+          controls
+          preload="metadata"
+          onClick={e => e.stopPropagation()}
+          style={{
+            width: "100%",
+            maxWidth: 420,
+            minHeight: 40,
+            borderRadius: 10,
+            display: "block"
           }}
         />
       ) : null}

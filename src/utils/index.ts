@@ -41,7 +41,7 @@ export {
   displayName
 } from "./contactDisplay";
 export { pickTrimmedString, normalizeChatMe } from "./profile";
-export { isImageMime, isVideoMime } from "./mime";
+export { isImageMime, isVideoMime, isAudioMime } from "./mime";
 export {
   resolveMeshserverAssetUrl,
   buildMeshserverMediaUrl,
