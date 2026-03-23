@@ -151,6 +151,7 @@ function FileMessageContent(props: {
         <audio
           src={props.downloadUrl}
           controls
+          controlsList="nodownload"
           preload="metadata"
           onClick={e => e.stopPropagation()}
           style={{
@@ -163,20 +164,22 @@ function FileMessageContent(props: {
         />
       ) : null}
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <a
-          href={props.downloadUrl}
-          download={fileName}
-          style={{
-            color: "#93c5fd",
-            textDecoration: "none",
-            fontWeight: 700,
-            fontSize: 13
-          }}
-        >
-          下载文件
-        </a>
-      </div>
+      {!isAudio ? (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <a
+            href={props.downloadUrl}
+            download={fileName}
+            style={{
+              color: "#93c5fd",
+              textDecoration: "none",
+              fontWeight: 700,
+              fontSize: 13
+            }}
+          >
+            下载文件
+          </a>
+        </div>
+      ) : null}
     </div>
   );
 }
