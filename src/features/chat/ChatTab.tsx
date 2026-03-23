@@ -258,6 +258,8 @@ export interface ChatTabProps {
   joinGroup: (groupId: string) => void;
   /** 標記會話已讀（清除側欄未讀角標） */
   markThreadAsRead: (kind: ThreadKind, threadId: string) => void;
+  /** 從聯絡人等入口開啟聊天時寫入未讀條數，供初次捲動定位 */
+  pendingScrollUnreadRef: React.MutableRefObject<number | null>;
 }
 
 export function ChatTab(props: ChatTabProps) {
@@ -300,7 +302,8 @@ export function ChatTab(props: ChatTabProps) {
     sendFileForCurrentThread,
     openGroupThread,
     joinGroup,
-    markThreadAsRead
+    markThreadAsRead,
+    pendingScrollUnreadRef
   } = props;
 
   const [imagePreview, setImagePreview] = React.useState<{
@@ -326,6 +329,71 @@ export function ChatTab(props: ChatTabProps) {
       void sendFileForCurrentThread(file);
     }
   };
+
+  const messagesScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const initialScrollDoneKeyRef = React.useRef<string | null>(null);
+  const [atBottom, setAtBottom] = React.useState(true);
+
+  React.useEffect(() => {
+    initialScrollDoneKeyRef.current = null;
+  }, [selectedThreadId, selectedThreadKind]);
+
+  const handleMessagesScroll = React.useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const threshold = 72;
+    const bottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    setAtBottom(bottom);
+  }, []);
+
+  const scrollToLatest = React.useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    setAtBottom(true);
+  }, []);
+
+  React.useEffect(() => {
+    if (!selectedThreadId) return;
+    if (messagesLoading) return;
+    if (messages.length === 0) return;
+    const key = `${selectedThreadKind}:${selectedThreadId}`;
+    if (initialScrollDoneKeyRef.current === key) return;
+    initialScrollDoneKeyRef.current = key;
+
+    const unreadRaw = pendingScrollUnreadRef.current;
+    pendingScrollUnreadRef.current = null;
+    const unread = Math.max(0, unreadRaw ?? 0);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = messagesScrollRef.current;
+        if (!el) return;
+        if (unread > 0) {
+          const firstUnreadIdx = Math.max(0, messages.length - unread);
+          const anchor = el.querySelector(
+            `[data-msg-idx="${firstUnreadIdx}"]`
+          ) as HTMLElement | null;
+          if (anchor) {
+            anchor.scrollIntoView({ block: "start", behavior: "auto" });
+          } else {
+            el.scrollTop = el.scrollHeight;
+          }
+        } else {
+          el.scrollTop = el.scrollHeight;
+        }
+        handleMessagesScroll();
+      });
+    });
+  }, [
+    selectedThreadId,
+    selectedThreadKind,
+    messagesLoading,
+    messages.length,
+    pendingScrollUnreadRef,
+    handleMessagesScroll
+  ]);
 
   return (
     <div style={{ height: "100%", position: "relative" }}>
@@ -366,6 +434,7 @@ export function ChatTab(props: ChatTabProps) {
                     key={`${thread.kind}:${thread.id}`}
                     {...(directRowMenuHandlers || {})}
                     onClick={() => {
+                      pendingScrollUnreadRef.current = thread.unreadCount ?? 0;
                       setSelectedThreadId(thread.id);
                       setSelectedThreadKind(thread.kind);
                       markThreadAsRead(thread.kind, thread.id);
@@ -679,6 +748,17 @@ export function ChatTab(props: ChatTabProps) {
                     flex: 1,
                     minHeight: 0,
                     minWidth: 0,
+                    position: "relative",
+                    display: "flex",
+                    flexDirection: "column"
+                  }}
+                >
+                <div
+                  ref={messagesScrollRef}
+                  onScroll={handleMessagesScroll}
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
                     overflowY: "auto",
                     overflowX: "hidden",
                     padding: 12
@@ -710,7 +790,7 @@ export function ChatTab(props: ChatTabProps) {
                     暂无消息
                   </div>
                 ) : selectedThreadKind === "meshserver_group" ? (
-                  (messages as MeshserverSyncMessage[]).map(m => {
+                  (messages as MeshserverSyncMessage[]).map((m, idx) => {
                     const thread = meshGroups.find(
                       t => t.threadId === selectedThreadId
                     );
@@ -748,6 +828,7 @@ export function ChatTab(props: ChatTabProps) {
                     return (
                       <div
                         key={m.message_id}
+                        data-msg-idx={idx}
                         style={{
                           display: "flex",
                           justifyContent: fromMe ? "flex-end" : "flex-start",
@@ -870,7 +951,7 @@ export function ChatTab(props: ChatTabProps) {
                     );
                   })
                 ) : selectedThreadKind === "group" ? (
-                  (messages as GroupMessage[]).map(m => {
+                  (messages as GroupMessage[]).map((m, idx) => {
                     const fromMe = !!me && m.sender_peer_id === me.peer_id;
                     const deliverySummaryText = fromMe
                       ? formatDeliverySummary(m.delivery_summary)
@@ -911,6 +992,7 @@ export function ChatTab(props: ChatTabProps) {
                     return (
                       <div
                         key={m.msg_id}
+                        data-msg-idx={idx}
                         style={{
                           display: "flex",
                           justifyContent: fromMe ? "flex-end" : "flex-start",
@@ -996,7 +1078,7 @@ export function ChatTab(props: ChatTabProps) {
                     );
                   })
                 ) : (
-                  (messages as DirectMessage[]).map(m => {
+                  (messages as DirectMessage[]).map((m, idx) => {
                     const fromMe = m.direction === "outbound";
                     const deliveryText = fromMe
                       ? deliveryStatusText(m.state, m.delivered_at)
@@ -1045,6 +1127,7 @@ export function ChatTab(props: ChatTabProps) {
                       return (
                         <div
                           key={m.msg_id}
+                          data-msg-idx={idx}
                           style={{
                             display: "flex",
                             justifyContent: "center",
@@ -1130,6 +1213,7 @@ export function ChatTab(props: ChatTabProps) {
                     return (
                       <div
                         key={m.msg_id}
+                        data-msg-idx={idx}
                         style={{
                           display: "flex",
                           justifyContent: fromMe ? "flex-end" : "flex-start",
@@ -1216,6 +1300,30 @@ export function ChatTab(props: ChatTabProps) {
                   <div style={{ padding: 8, color: "#9ca3af", fontSize: 12 }}>
                     发送中…
                   </div>
+                ) : null}
+              </div>
+                {!atBottom && !messagesLoading && messages.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={scrollToLatest}
+                    style={{
+                      position: "absolute",
+                      right: 10,
+                      bottom: 10,
+                      zIndex: 5,
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(88,166,255,0.35)",
+                      background: "rgba(17,24,39,0.92)",
+                      color: "#bfdbfe",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      boxShadow: "0 6px 20px rgba(0,0,0,0.35)"
+                    }}
+                  >
+                    最新
+                  </button>
                 ) : null}
               </div>
 

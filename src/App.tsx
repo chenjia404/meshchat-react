@@ -224,6 +224,8 @@ const App: React.FC = () => {
   const [msgMenu, setMsgMenu] = useState<MessageMenuState | null>(null);
   const [forwardDraft, setForwardDraft] = useState<ForwardDraft | null>(null);
   const [forwardBusy, setForwardBusy] = useState(false);
+  /** 進入聊天時用於捲到「第一條未讀」的未讀條數（列表點擊與聯絡人開啟會話時寫入） */
+  const pendingScrollUnreadRef = React.useRef<number | null>(null);
   const [listItemMenu, setListItemMenu] = useState<null | {
     x: number;
     y: number;
@@ -1894,6 +1896,10 @@ const App: React.FC = () => {
       c => c.peer_id === peerId && (c.state || "active") === "active"
     );
     if (existing) {
+      pendingScrollUnreadRef.current = Math.max(
+        0,
+        existing.unread_count ?? 0
+      );
       setSelectedThreadId(existing.conversation_id);
       setSelectedThreadKind("direct");
       markThreadAsRead("direct", existing.conversation_id);
@@ -1936,6 +1942,10 @@ const App: React.FC = () => {
             )
           : undefined;
         if (existing?.conversation_id) {
+          pendingScrollUnreadRef.current = Math.max(
+            0,
+            existing.unread_count ?? 0
+          );
           setSelectedThreadId(existing.conversation_id);
           setSelectedThreadKind("direct");
           markThreadAsRead("direct", existing.conversation_id);
@@ -2213,6 +2223,7 @@ const App: React.FC = () => {
             openGroupThread={openGroupThread}
             joinGroup={joinGroup}
             markThreadAsRead={markThreadAsRead}
+            pendingScrollUnreadRef={pendingScrollUnreadRef}
           />
         )}
         {activeTab === "contacts" && (
