@@ -20,6 +20,9 @@ export interface PublicChannelProfileModalProps {
   onBioDraftChange: (v: string) => void;
   saveBusy: boolean;
   onSave: () => void;
+  /** 非创建者：取消订阅当前频道 */
+  unsubscribeBusy?: boolean;
+  onUnsubscribe?: () => void | Promise<void>;
   resolveAvatarSrc: (src?: string) => string | undefined;
 }
 
@@ -91,6 +94,8 @@ export function PublicChannelProfileModal({
   onBioDraftChange,
   saveBusy,
   onSave,
+  unsubscribeBusy,
+  onUnsubscribe,
   resolveAvatarSrc
 }: PublicChannelProfileModalProps) {
   const body = (
@@ -227,8 +232,31 @@ export function PublicChannelProfileModal({
               </button>
             </div>
           ) : (
-            <div style={{ fontSize: 12, opacity: 0.65, marginTop: 12 }}>
-              仅创建者可修改频道名称与简介。
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, opacity: 0.65, marginBottom: onUnsubscribe ? 12 : 0 }}>
+                仅创建者可修改频道名称与简介。
+              </div>
+              {onUnsubscribe ? (
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    disabled={!!unsubscribeBusy}
+                    onClick={() => void onUnsubscribe()}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(248,113,113,0.45)",
+                      background: "rgba(127,29,29,0.35)",
+                      color: "#fecaca",
+                      fontWeight: 700,
+                      cursor: unsubscribeBusy ? "not-allowed" : "pointer",
+                      opacity: unsubscribeBusy ? 0.65 : 1
+                    }}
+                  >
+                    {unsubscribeBusy ? "处理中…" : "取消订阅"}
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
         </>

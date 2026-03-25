@@ -486,6 +486,45 @@ const App: React.FC = () => {
     selectedThread?.isPublicChannelOwner
   ]);
 
+  const handleUnsubscribePublicChannel = useCallback(async () => {
+    const id = publicChannelProfileDetail?.channelId?.trim();
+    if (!id) return;
+    if (
+      selectedThreadKind === "public_channel" &&
+      selectedThreadId === id &&
+      selectedThread?.isPublicChannelOwner
+    ) {
+      return;
+    }
+    if (!window.confirm("确定取消订阅该公开频道？取消后将从会话列表中移除。")) return;
+    setActionBusy("publicChannelUnsubscribe");
+    try {
+      // 与 POST …/subscribe 对应：取消订阅为 POST …/unsubscribe（DELETE …/subscribe 会 405）
+      await post(`/api/v1/public-channels/${encodeURIComponent(id)}/unsubscribe`, {});
+      // 先从内存列表移除，再拉订阅；避免 merge 曾保留「孤儿」条目导致 localStorage 不更新
+      setPublicChannelEntries(prev => prev.filter(e => e.channelId !== id));
+      await refreshPublicChannelSubscriptions(me?.peer_id);
+      setPublicChannelProfileOpen(false);
+      setPublicChannelProfileDetail(null);
+      setPublicChannelProfileError(null);
+      if (selectedThreadKind === "public_channel" && selectedThreadId === id) {
+        setSelectedThreadId(null);
+        setMessages([]);
+      }
+    } catch (err: any) {
+      alert("取消订阅失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  }, [
+    publicChannelProfileDetail?.channelId,
+    me?.peer_id,
+    refreshPublicChannelSubscriptions,
+    selectedThreadKind,
+    selectedThreadId,
+    selectedThread?.isPublicChannelOwner
+  ]);
+
   const convListRefreshTimerRef = React.useRef<number | null>(null);
   const scheduleRefreshConversationList = useCallback(() => {
     if (convListRefreshTimerRef.current != null) {
@@ -2837,6 +2876,16 @@ const App: React.FC = () => {
         onBioDraftChange={setChannelProfileBioDraft}
         saveBusy={actionBusy === "publicChannelProfile"}
         onSave={handleSavePublicChannelProfile}
+        unsubscribeBusy={actionBusy === "publicChannelUnsubscribe"}
+        onUnsubscribe={
+          selectedThreadKind === "public_channel" &&
+          selectedThreadId !== null &&
+          publicChannelProfileDetail !== null &&
+          selectedThreadId === publicChannelProfileDetail.channelId &&
+          !selectedThread?.isPublicChannelOwner
+            ? handleUnsubscribePublicChannel
+            : undefined
+        }
         resolveAvatarSrc={resolveAvatarSrc}
       />
       <GroupProfileModal

@@ -267,9 +267,9 @@ export function publicChannelListEntryFromSummary(
 }
 
 /**
- * 用 GET /subscriptions 结果更新会话列表：以接口为准合并预览；
- * - 接口解析为空时不覆盖本地（避免错误响应清空列表）；
- * - 本地有、接口暂未返回的条目（如刚创建）保留在列表末尾。
+ * 用 GET /subscriptions 结果更新会话列表：以接口为准，仅把本地的 lastMessagePreview 合并进仍存在的频道；
+ * 接口未返回的频道视为已取消订阅，不再保留（否则会写回 localStorage）。
+ * 接口解析为空数组时不覆盖本地（避免异常响应清空列表）。
  */
 export function mergePublicChannelPreviewFromPrevious(
   prev: PublicChannelListEntry[],
@@ -280,27 +280,10 @@ export function mergePublicChannelPreviewFromPrevious(
   const previewById = new Map(
     prev.map(e => [e.channelId, e.lastMessagePreview] as const)
   );
-  const nextIds = new Set(next.map(e => e.channelId));
-
-  const merged = next.map(e => ({
+  return next.map(e => ({
     ...e,
     lastMessagePreview: previewById.get(e.channelId) ?? e.lastMessagePreview
   }));
-
-  const orphans = prev.filter(e => !nextIds.has(e.channelId));
-  if (!orphans.length) return merged;
-
-  const maxOrder = Math.max(
-    -1,
-    ...merged.map(e => e.subscriptionOrder ?? -1)
-  );
-  return [
-    ...merged,
-    ...orphans.map((e, i) => ({
-      ...e,
-      subscriptionOrder: maxOrder + 1 + i
-    }))
-  ];
 }
 
 /** 解析 GET /api/v1/public-channels/{id} 的资料（兼容 channel/data/profile 包装与驼峰字段） */
