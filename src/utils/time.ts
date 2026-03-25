@@ -25,6 +25,17 @@ export function formatTimeFromMs(value?: number | null): string {
   return d.toLocaleString();
 }
 
+export function formatTimeFromUnixSec(sec?: number | null): string {
+  if (sec == null || !Number.isFinite(sec)) return "";
+  return formatTime(new Date(Math.floor(sec) * 1000).toISOString());
+}
+
+/** Unix 秒级时间戳的相对时间文案（用于公开频道等） */
+export function relativeTimeFromUnixSec(sec?: number | null): string {
+  if (sec == null || !Number.isFinite(sec)) return "";
+  return relativeTime(new Date(Math.floor(sec) * 1000).toISOString());
+}
+
 export function relativeTime(value?: string | null): string {
   if (!value) return "";
   const d = new Date(value);

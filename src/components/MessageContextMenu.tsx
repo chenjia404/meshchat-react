@@ -16,6 +16,9 @@ export type MessageMenuState = {
   msgId: string;
   forwardText: string;
   canRevoke: boolean;
+  /** 公開頻道 owner：純文字消息可編輯 */
+  canEdit?: boolean;
+  editInitialText?: string;
   /** 若為檔案類訊息（圖/視頻等），轉發時上傳二進位而非僅發文字 */
   forwardFile?: ForwardFilePayload;
 };
@@ -60,6 +63,12 @@ export interface MessageContextMenuProps {
   menu: MessageMenuState | null;
   onClose: () => void;
   onRevoke: (kind: ThreadKind, threadId: string, msgId: string) => void | Promise<void>;
+  /** 公開頻道編輯純文字 */
+  onEditPublicChannel?: (
+    threadId: string,
+    msgId: string,
+    currentText: string
+  ) => void | Promise<void>;
   onForward: (payload: {
     text: string;
     file?: ForwardFilePayload;
@@ -70,12 +79,17 @@ export function MessageContextMenu({
   menu,
   onClose,
   onRevoke,
+  onEditPublicChannel,
   onForward
 }: MessageContextMenuProps) {
   if (!menu) return null;
   const hasContent =
     menu.forwardText.trim().length > 0 || !!menu.forwardFile;
   const showRevoke = menu.canRevoke;
+  const showEdit =
+    menu.kind === "public_channel" &&
+    !!menu.canEdit &&
+    !!onEditPublicChannel;
   return (
     <div
       onClick={onClose}
@@ -151,7 +165,7 @@ export function MessageContextMenu({
             }}
             style={{
               ...btn,
-              marginTop: hasContent ? 6 : 0,
+              marginTop: hasContent || showEdit ? 6 : 0,
               background: "rgba(248,81,73,0.12)",
               color: "#fecaca",
               fontWeight: 700
@@ -165,7 +179,7 @@ export function MessageContextMenu({
           onClick={onClose}
           style={{
             ...btn,
-            marginTop: hasContent || showRevoke ? 6 : 0,
+            marginTop: hasContent || showRevoke || showEdit ? 6 : 0,
             background: "transparent",
             color: "#e5e7eb"
           }}

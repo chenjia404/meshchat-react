@@ -10,6 +10,11 @@ export {
   buildChatThreadListItems
 } from "./chatViewModels";
 export {
+  loadPublicChannelEntries,
+  savePublicChannelEntries,
+  upsertPublicChannelEntry
+} from "./publicChannelStorage";
+export {
   RETENTION_MINUTES_MAX,
   RETENTION_INVALID_ALERT_ZH,
   isValidRetentionMinutesTotal,

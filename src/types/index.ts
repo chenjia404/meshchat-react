@@ -18,3 +18,9 @@ export type {
 } from "./mesh";
 export type { WsChatEvent } from "./ws";
 export type { ContactViewRow } from "./contactView";
+export type {
+  ChannelSummary,
+  PublicChannelListEntry,
+  PublicChannelMessage,
+  PublicChannelProfileDetail
+} from "./publicChannel";

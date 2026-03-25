@@ -242,5 +242,6 @@ export function ForwardMessageModal({
 function threadKindLabel(kind: ThreadKind): string {
   if (kind === "direct") return "私聊";
   if (kind === "group") return "群聊";
+  if (kind === "public_channel") return "公开频道";
   return "Mesh";
 }

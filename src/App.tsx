@@ -16,12 +16,16 @@ import type {
   DirectMessage,
   GroupMessage,
   GroupDetails,
-  WsChatEvent
+  WsChatEvent,
+  PublicChannelListEntry,
+  PublicChannelMessage,
+  PublicChannelProfileDetail
 } from "./types";
 import {
   api,
   get,
   post,
+  put,
   deleteChatResource,
   avatarUrl,
   directFileUrl,
@@ -52,7 +56,15 @@ import {
   wsPayloadHasFullMessage,
   directMessageFromWsPayload,
   groupMessageFromWsPayload,
-  mergeMessagesByTime
+  mergeMessagesByTime,
+  peekPublicChannelPreview,
+  parsePublicChannelProfile,
+  parsePublicChannelProfileDetail,
+  extractChannelIdFromCreateResponse,
+  normalizeChannelSubscriptionsResponse,
+  publicChannelListEntryFromSummary,
+  mergePublicChannelPreviewFromPrevious,
+  postPublicChannelFileMessage
 } from "./utils";
 import { createListRowMenuHandlers } from "./hooks/createListRowMenuHandlers";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -63,6 +75,8 @@ import {
   buildContactAvatarMap,
   mapContactsToRows,
   buildChatThreadListItems,
+  loadPublicChannelEntries,
+  savePublicChannelEntries,
   normalizeMeshSpacesFromResponse,
   fetchInitialMeshGroupThreads,
   RETENTION_INVALID_ALERT_ZH,
@@ -93,6 +107,9 @@ import {
   MeshJoinModal,
   RetentionModal,
   GroupProfileModal,
+  CreatePublicChannelModal,
+  SubscribePublicChannelModal,
+  PublicChannelProfileModal,
   type RetentionUnit
 } from "./features/modals";
 
@@ -107,10 +124,13 @@ const App: React.FC = () => {
   const [conversations, setConversations] = useState<ConversationRaw[]>([]);
   const [groups, setGroups] = useState<GroupRaw[]>([]);
   const [meshGroups, setMeshGroups] = useState<MeshserverGroupThread[]>([]);
+  const [publicChannelEntries, setPublicChannelEntries] = useState<PublicChannelListEntry[]>(
+    () => loadPublicChannelEntries()
+  );
   const [requestsRaw, setRequestsRaw] = useState<FriendRequestRaw[]>([]);
 
   const [messages, setMessages] = useState<
-    Array<DirectMessage | GroupMessage | MeshserverSyncMessage>
+    Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>
   >([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -136,11 +156,16 @@ const App: React.FC = () => {
         conversations,
         groups,
         meshGroups,
+        publicChannelEntries,
         contactsRaw,
         contactAvatarMap
       ),
-    [conversations, groups, meshGroups, contactsRaw, contactAvatarMap]
+    [conversations, groups, meshGroups, publicChannelEntries, contactsRaw, contactAvatarMap]
   );
+
+  React.useEffect(() => {
+    savePublicChannelEntries(publicChannelEntries);
+  }, [publicChannelEntries]);
 
   /** 各會話未讀條數（key: `${kind}:${id}`） */
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>(
@@ -207,6 +232,19 @@ const App: React.FC = () => {
     selectedThreadRef.current = { kind: selectedThreadKind, id: selectedThreadId };
   }, [selectedThreadKind, selectedThreadId]);
 
+  React.useEffect(() => {
+    if (selectedThreadKind !== "public_channel" || !selectedThreadId) return;
+    const arr = messages as PublicChannelMessage[];
+    if (!arr.length) return;
+    const preview = peekPublicChannelPreview(arr);
+    if (!preview) return;
+    setPublicChannelEntries(prev =>
+      prev.map(e =>
+        e.channelId === selectedThreadId ? { ...e, lastMessagePreview: preview } : e
+      )
+    );
+  }, [messages, selectedThreadKind, selectedThreadId]);
+
   const [wsConnected, setWsConnected] = useState(false);
 
   const isMobile = useIsMobile();
@@ -269,12 +307,28 @@ const App: React.FC = () => {
   const [createGroupMemberQuery, setCreateGroupMemberQuery] = useState("");
   const [actionBusy, setActionBusy] = useState<null | string>(null);
 
+  const [createPublicChannelOpen, setCreatePublicChannelOpen] = useState(false);
+  const [subscribePublicChannelOpen, setSubscribePublicChannelOpen] = useState(false);
+  const [publicChannelNameDraft, setPublicChannelNameDraft] = useState("");
+  const [publicChannelBioDraft, setPublicChannelBioDraft] = useState("");
+  const [subscribeChannelUuidDraft, setSubscribeChannelUuidDraft] = useState("");
+
   // 群资料（管理员可改名/解散/邀请）
   const [groupProfileOpen, setGroupProfileOpen] = useState(false);
   const [groupTitleDraft, setGroupTitleDraft] = useState("");
   const [groupInviteQuery, setGroupInviteQuery] = useState("");
   const [groupInviteIds, setGroupInviteIds] = useState<Set<string>>(new Set());
   const [groupDissolveReason, setGroupDissolveReason] = useState("");
+
+  const [publicChannelProfileOpen, setPublicChannelProfileOpen] = useState(false);
+  const [publicChannelProfileLoading, setPublicChannelProfileLoading] = useState(false);
+  const [publicChannelProfileError, setPublicChannelProfileError] = useState<string | null>(
+    null
+  );
+  const [publicChannelProfileDetail, setPublicChannelProfileDetail] =
+    useState<PublicChannelProfileDetail | null>(null);
+  const [channelProfileNameDraft, setChannelProfileNameDraft] = useState("");
+  const [channelProfileBioDraft, setChannelProfileBioDraft] = useState("");
 
   // 私聊對象連線狀態（peer_id -> 狀態字串）
   const [peerStatusMap, setPeerStatusMap] = useState<Map<string, any>>(
@@ -301,6 +355,22 @@ const App: React.FC = () => {
     [threads, selectedThreadId, selectedThreadKind]
   );
 
+  /** 列表上的 isPublicChannelOwner 与本地 entries 的 isOwner 任一成立即可发（避免订阅数据未同步导致无法发） */
+  const canPostPublicChannel = useCallback(
+    (channelId: string) => {
+      const id = channelId.trim();
+      if (!id) return false;
+      if (
+        threads.some(
+          t => t.kind === "public_channel" && t.id === id && t.isPublicChannelOwner
+        )
+      )
+        return true;
+      return publicChannelEntries.some(e => e.channelId === id && e.isOwner);
+    },
+    [threads, publicChannelEntries]
+  );
+
   const selectedConversation = useMemo(() => {
     if (selectedThreadKind !== "direct" || !selectedThreadId) return null;
     return conversations.find(c => c.conversation_id === selectedThreadId) || null;
@@ -321,6 +391,100 @@ const App: React.FC = () => {
     setMessagesLoading,
     setSelectedGroupDetails
   });
+
+  const refreshPublicChannelSubscriptions = useCallback(
+    async (mePeerOverride?: string | null) => {
+      const pid = (mePeerOverride ?? me?.peer_id)?.trim() || undefined;
+      try {
+        const raw = await get<unknown>("/api/v1/public-channels/subscriptions");
+        const summaries = normalizeChannelSubscriptionsResponse(raw);
+        const mapped = summaries.map((s, i) =>
+          publicChannelListEntryFromSummary(s, pid, i)
+        );
+        setPublicChannelEntries(prev =>
+          mergePublicChannelPreviewFromPrevious(prev, mapped)
+        );
+      } catch (e) {
+        console.warn("拉取公开频道订阅列表失败:", e);
+      }
+    },
+    [me?.peer_id]
+  );
+
+  const openPublicChannelProfile = useCallback(async (channelId: string) => {
+    const id = channelId.trim();
+    if (!id) return;
+    setPublicChannelProfileOpen(true);
+    setPublicChannelProfileLoading(true);
+    setPublicChannelProfileError(null);
+    setPublicChannelProfileDetail(null);
+    try {
+      const raw = await get<unknown>(`/api/v1/public-channels/${encodeURIComponent(id)}`);
+      const parsed = parsePublicChannelProfileDetail(raw, id);
+      if (parsed) {
+        setPublicChannelProfileDetail(parsed);
+        setChannelProfileNameDraft(parsed.name);
+        setChannelProfileBioDraft(parsed.bio);
+      } else {
+        setPublicChannelProfileError("无法解析频道资料");
+      }
+    } catch (err: any) {
+      setPublicChannelProfileError(err?.message || String(err));
+    } finally {
+      setPublicChannelProfileLoading(false);
+    }
+  }, []);
+
+  const handleSavePublicChannelProfile = useCallback(async () => {
+    const id = publicChannelProfileDetail?.channelId?.trim();
+    if (!id) return;
+    if (
+      selectedThreadKind !== "public_channel" ||
+      selectedThreadId !== id ||
+      !selectedThread?.isPublicChannelOwner
+    ) {
+      alert("仅创建者可保存资料");
+      return;
+    }
+    const name = channelProfileNameDraft.trim();
+    if (!name) {
+      alert("频道名称不能为空");
+      return;
+    }
+    setActionBusy("publicChannelProfile");
+    try {
+      const body = { name, bio: channelProfileBioDraft.trim() };
+      const path = `/api/v1/public-channels/${encodeURIComponent(id)}`;
+      await put(path, body);
+      const raw = await get<unknown>(path);
+      const parsed = parsePublicChannelProfileDetail(raw, id);
+      if (parsed) {
+        setPublicChannelProfileDetail(parsed);
+        setChannelProfileNameDraft(parsed.name);
+        setChannelProfileBioDraft(parsed.bio);
+      }
+      setPublicChannelEntries(prev =>
+        prev.map(e =>
+          e.channelId === id ? { ...e, name: parsed?.name ?? name } : e
+        )
+      );
+      await refreshPublicChannelSubscriptions(me?.peer_id);
+      alert("已保存");
+    } catch (err: any) {
+      alert("保存失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  }, [
+    publicChannelProfileDetail?.channelId,
+    channelProfileNameDraft,
+    channelProfileBioDraft,
+    me?.peer_id,
+    refreshPublicChannelSubscriptions,
+    selectedThreadKind,
+    selectedThreadId,
+    selectedThread?.isPublicChannelOwner
+  ]);
 
   const convListRefreshTimerRef = React.useRef<number | null>(null);
   const scheduleRefreshConversationList = useCallback(() => {
@@ -434,7 +598,7 @@ const App: React.FC = () => {
         setMessages(
           prev =>
             mergeMessagesByTime(prev as DirectMessage[], dm) as Array<
-              DirectMessage | GroupMessage | MeshserverSyncMessage
+              DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage
             >
         );
         return true;
@@ -444,7 +608,7 @@ const App: React.FC = () => {
       setMessages(
         prev =>
           mergeMessagesByTime(prev as GroupMessage[], gm) as Array<
-            DirectMessage | GroupMessage | MeshserverSyncMessage
+            DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage
           >
       );
       return true;
@@ -658,6 +822,21 @@ const App: React.FC = () => {
           // 非关键：meshserver 异常不影响原聊天
           console.error("meshserver 初始化失败:", meshErr);
         }
+
+        try {
+          const rawSubs = await get<unknown>(
+            "/api/v1/public-channels/subscriptions"
+          );
+          const summaries = normalizeChannelSubscriptionsResponse(rawSubs);
+          const mapped = summaries.map((s, i) =>
+            publicChannelListEntryFromSummary(s, meNormalized?.peer_id, i)
+          );
+          setPublicChannelEntries(prev =>
+            mergePublicChannelPreviewFromPrevious(prev, mapped)
+          );
+        } catch {
+          /* 非关键：公开频道订阅列表 */
+        }
       } catch (err) {
         console.error("初始化失败:", err);
       }
@@ -707,6 +886,33 @@ const App: React.FC = () => {
         );
         await loadThreadMessages("meshserver_group", selectedThreadId);
         markThreadAsRead("meshserver_group", selectedThreadId);
+      } else if (selectedThreadKind === "public_channel") {
+        if (!selectedThreadId || !canPostPublicChannel(selectedThreadId)) {
+          alert("仅频道创建者可以发布内容");
+          return;
+        }
+        const tid = selectedThreadId;
+        await post(`/api/v1/public-channels/${encodeURIComponent(tid)}/messages`, {
+          message_type: "text",
+          text: text.trim(),
+          files: []
+        });
+        await loadThreadMessages("public_channel", tid);
+        markThreadAsRead("public_channel", tid);
+        const p = text.trim().replace(/\s+/g, " ");
+        const short =
+          p.length > 36 ? p.slice(0, 36) + "…" : p;
+        setPublicChannelEntries(prev =>
+          prev.map(e =>
+            e.channelId === tid
+              ? {
+                  ...e,
+                  lastMessagePreview: short,
+                  updatedAtSec: Math.floor(Date.now() / 1000)
+                }
+              : e
+          )
+        );
       } else if (selectedThreadKind === "group") {
         await post(`/api/v1/groups/${encodeURIComponent(selectedThreadId)}/messages`, {
           text
@@ -807,6 +1013,24 @@ const App: React.FC = () => {
         markThreadAsRead("meshserver_group", targetThreadId);
         return;
       }
+      if (targetKind === "public_channel") {
+        if (!canPostPublicChannel(targetThreadId)) {
+          throw new Error("仅频道创建者可以发布");
+        }
+        await post(`/api/v1/public-channels/${encodeURIComponent(targetThreadId)}/messages`, {
+          message_type: "text",
+          text: body,
+          files: []
+        });
+        if (
+          selectedThreadKind === "public_channel" &&
+          selectedThreadId === targetThreadId
+        ) {
+          await loadThreadMessages("public_channel", targetThreadId);
+        }
+        markThreadAsRead("public_channel", targetThreadId);
+        return;
+      }
       if (targetKind === "group") {
         await post(`/api/v1/groups/${encodeURIComponent(targetThreadId)}/messages`, {
           text: body
@@ -877,6 +1101,7 @@ const App: React.FC = () => {
     },
     [
       meshGroups,
+      canPostPublicChannel,
       conversations,
       selectedThreadKind,
       selectedThreadId,
@@ -890,6 +1115,20 @@ const App: React.FC = () => {
 
   const postFileToTargetThread = useCallback(
     async (targetKind: ThreadKind, targetThreadId: string, file: File) => {
+      if (targetKind === "public_channel") {
+        if (!canPostPublicChannel(targetThreadId)) {
+          throw new Error("仅频道创建者可以发布");
+        }
+        await postPublicChannelFileMessage(targetThreadId, file);
+        if (
+          selectedThreadKind === "public_channel" &&
+          selectedThreadId === targetThreadId
+        ) {
+          await loadThreadMessages("public_channel", targetThreadId);
+        }
+        markThreadAsRead("public_channel", targetThreadId);
+        return;
+      }
       if (targetKind === "meshserver_group") {
         if (!isImageMime(file.type)) {
           throw new Error("Mesh 频道仅支持图片文件");
@@ -990,6 +1229,7 @@ const App: React.FC = () => {
     },
     [
       meshGroups,
+      canPostPublicChannel,
       conversations,
       selectedThreadKind,
       selectedThreadId,
@@ -1081,6 +1321,31 @@ const App: React.FC = () => {
     if (!selectedThreadId) return;
     setFileSending({ text: `上传中：${file.name}` });
     try {
+      if (selectedThreadKind === "public_channel") {
+        if (!selectedThreadId || !canPostPublicChannel(selectedThreadId)) {
+          alert("仅频道创建者可以发布内容");
+          setFileSending(null);
+          return;
+        }
+        await postPublicChannelFileMessage(selectedThreadId, file);
+        setFileSending(null);
+        await loadThreadMessages("public_channel", selectedThreadId);
+        markThreadAsRead("public_channel", selectedThreadId);
+        const short =
+          file.name.length > 36 ? file.name.slice(0, 36) + "…" : file.name;
+        setPublicChannelEntries(prev =>
+          prev.map(e =>
+            e.channelId === selectedThreadId
+              ? {
+                  ...e,
+                  lastMessagePreview: `[文件] ${short}`,
+                  updatedAtSec: Math.floor(Date.now() / 1000)
+                }
+              : e
+          )
+        );
+        return;
+      }
       if (selectedThreadKind === "meshserver_group") {
         const thread = meshGroups.find(t => t.threadId === selectedThreadId) || null;
         const connectionName = thread?.connectionName;
@@ -1218,6 +1483,29 @@ const App: React.FC = () => {
     }
   };
 
+  const editPublicChannelMessage = async (
+    channelId: string,
+    messageId: string,
+    currentText: string
+  ) => {
+    if (!canPostPublicChannel(channelId)) {
+      alert("仅频道创建者可编辑消息");
+      return;
+    }
+    const next = window.prompt("编辑消息", currentText);
+    if (next === null) return;
+    const text = next.replace(/\r\n/g, "\n").trim();
+    const path = `/api/v1/public-channels/${encodeURIComponent(
+      channelId
+    )}/messages/${encodeURIComponent(messageId)}`;
+    try {
+      await put(path, { message_type: "text", text, files: [] });
+      await loadThreadMessages("public_channel", channelId);
+    } catch (err: any) {
+      alert("编辑失败：" + (err?.message || String(err)));
+    }
+  };
+
   const closeMsgMenu = React.useCallback(() => setMsgMenu(null), []);
 
   useEffect(() => {
@@ -1258,7 +1546,9 @@ const App: React.FC = () => {
       msgId: string,
       forwardText: string,
       canRevoke: boolean,
-      forwardFile?: ForwardFilePayload
+      forwardFile?: ForwardFilePayload,
+      canEdit?: boolean,
+      editInitialText?: string
     ) => {
       const pad = 8;
       const w = 180;
@@ -1269,6 +1559,7 @@ const App: React.FC = () => {
         h += row + gap;
         h += row + gap;
       }
+      if (canEdit) h += row + gap;
       if (canRevoke) h += row + gap;
       const maxX = Math.max(pad, window.innerWidth - w - pad);
       const maxY = Math.max(pad, window.innerHeight - h - pad);
@@ -1280,7 +1571,9 @@ const App: React.FC = () => {
         msgId,
         forwardText,
         canRevoke,
-        forwardFile
+        forwardFile,
+        canEdit,
+        editInitialText
       });
     },
     []
@@ -1291,7 +1584,13 @@ const App: React.FC = () => {
       kind: ThreadKind,
       threadId: string,
       msgId: string,
-      opts: { canRevoke: boolean; forwardText: string; forwardFile?: ForwardFilePayload }
+      opts: {
+        canRevoke: boolean;
+        forwardText: string;
+        forwardFile?: ForwardFilePayload;
+        canEdit?: boolean;
+        editInitialText?: string;
+      }
     ): {
       onPointerDown: React.PointerEventHandler;
       onPointerUp: React.PointerEventHandler;
@@ -1299,9 +1598,12 @@ const App: React.FC = () => {
       onPointerMove: React.PointerEventHandler;
       onContextMenu: React.MouseEventHandler;
     } => {
-      const { canRevoke, forwardText, forwardFile } = opts;
+      const { canRevoke, forwardText, forwardFile, canEdit, editInitialText } = opts;
       const allowMenu =
-        canRevoke || forwardText.trim().length > 0 || !!forwardFile;
+        canRevoke ||
+        !!canEdit ||
+        forwardText.trim().length > 0 ||
+        !!forwardFile;
       let timer: number | null = null;
       let startX = 0;
       let startY = 0;
@@ -1329,7 +1631,9 @@ const App: React.FC = () => {
               msgId,
               forwardText,
               canRevoke,
-              forwardFile
+              forwardFile,
+              canEdit,
+              editInitialText
             );
             clear();
           }, 520);
@@ -1353,7 +1657,9 @@ const App: React.FC = () => {
             msgId,
             forwardText,
             canRevoke,
-            forwardFile
+            forwardFile,
+            canEdit,
+            editInitialText
           );
         }
       };
@@ -2074,6 +2380,66 @@ const App: React.FC = () => {
     }
   };
 
+  const handleCreatePublicChannel = async () => {
+    const name = publicChannelNameDraft.trim();
+    if (!name) return;
+    setActionBusy("publicChannelCreate");
+    try {
+      const resp = await post<unknown>("/api/v1/public-channels", {
+        name,
+        bio: publicChannelBioDraft.trim()
+      });
+      const cid = extractChannelIdFromCreateResponse(resp);
+      if (!cid) throw new Error("创建成功但未返回 channel_id");
+      const prof = await get<unknown>(
+        `/api/v1/public-channels/${encodeURIComponent(cid)}`
+      );
+      const parsed = parsePublicChannelProfile(prof, cid);
+      if (!parsed) throw new Error("无法拉取频道资料");
+      await post(`/api/v1/public-channels/${encodeURIComponent(cid)}/subscribe`, {
+        last_seen_seq: 0
+      }).catch(() => null);
+      await refreshPublicChannelSubscriptions(me?.peer_id);
+      setCreatePublicChannelOpen(false);
+      setPublicChannelNameDraft("");
+      setPublicChannelBioDraft("");
+      setActiveTab("chat");
+      setSelectedThreadId(cid);
+      setSelectedThreadKind("public_channel");
+      if (isMobile) setMobileView("chat");
+      markThreadAsRead("public_channel", cid);
+      alert("公开频道已创建");
+    } catch (err: any) {
+      alert("创建公开频道失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleSubscribePublicChannel = async () => {
+    const raw = subscribeChannelUuidDraft.trim();
+    if (!raw) return;
+    setActionBusy("publicChannelSubscribe");
+    try {
+      await post(`/api/v1/public-channels/${encodeURIComponent(raw)}/subscribe`, {
+        last_seen_seq: 0
+      });
+      await refreshPublicChannelSubscriptions(me?.peer_id);
+      setSubscribePublicChannelOpen(false);
+      setSubscribeChannelUuidDraft("");
+      setActiveTab("chat");
+      setSelectedThreadId(raw);
+      setSelectedThreadKind("public_channel");
+      if (isMobile) setMobileView("chat");
+      markThreadAsRead("public_channel", raw);
+      alert("已订阅公开频道");
+    } catch (err: any) {
+      alert("订阅失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
   const handleSaveMyProfile = async () => {
     try {
       const nick = meNicknameDraft.trim();
@@ -2203,6 +2569,7 @@ const App: React.FC = () => {
             setContactsMobileView={setContactsMobileView}
             setActiveTab={setActiveTab}
             openGroupProfile={openGroupProfile}
+            openPublicChannelProfile={openPublicChannelProfile}
             peerStatusMap={peerStatusMap}
             openRetentionModal={openRetentionModal}
             selectedConversation={selectedConversation}
@@ -2293,6 +2660,7 @@ const App: React.FC = () => {
       <MessageContextMenu
         menu={msgMenu}
         onClose={closeMsgMenu}
+        onEditPublicChannel={editPublicChannelMessage}
         onForward={({ text, file }) => {
           if (file) {
             setForwardDraft({ kind: "file", ...file });
@@ -2301,6 +2669,20 @@ const App: React.FC = () => {
           }
         }}
         onRevoke={async (kind, threadId, msgId) => {
+          if (kind === "public_channel") {
+            if (!window.confirm("确认撤回这条消息吗？")) return;
+            try {
+              await deleteChatResource(
+                `/api/v1/public-channels/${encodeURIComponent(
+                  threadId
+                )}/messages/${encodeURIComponent(msgId)}`
+              );
+              await loadThreadMessages("public_channel", threadId);
+            } catch (err: any) {
+              alert("撤回失败：" + (err?.message || String(err)));
+            }
+            return;
+          }
           if (kind === "group") await revokeGroupMessage(threadId, msgId);
           else await revokeDirectMessage(threadId, msgId);
         }}
@@ -2330,6 +2712,8 @@ const App: React.FC = () => {
         onAddFriend={() => setAddFriendOpen(true)}
         onCreateGroup={() => setCreateGroupOpen(true)}
         onMeshJoin={openMeshJoin}
+        onCreatePublicChannel={() => setCreatePublicChannelOpen(true)}
+        onSubscribePublicChannel={() => setSubscribePublicChannelOpen(true)}
       />
       <AddFriendModal
         open={addFriendOpen}
@@ -2357,6 +2741,24 @@ const App: React.FC = () => {
         actionBusy={actionBusy}
         onCreateGroup={createGroup}
         resolveAvatarSrc={resolveAvatarSrc}
+      />
+      <CreatePublicChannelModal
+        open={createPublicChannelOpen}
+        onClose={() => setCreatePublicChannelOpen(false)}
+        name={publicChannelNameDraft}
+        onNameChange={setPublicChannelNameDraft}
+        bio={publicChannelBioDraft}
+        onBioChange={setPublicChannelBioDraft}
+        actionBusy={actionBusy === "publicChannelCreate"}
+        onCreate={handleCreatePublicChannel}
+      />
+      <SubscribePublicChannelModal
+        open={subscribePublicChannelOpen}
+        onClose={() => setSubscribePublicChannelOpen(false)}
+        channelUuid={subscribeChannelUuidDraft}
+        onChannelUuidChange={setSubscribeChannelUuidDraft}
+        actionBusy={actionBusy === "publicChannelSubscribe"}
+        onSubscribe={handleSubscribePublicChannel}
       />
       <MeshJoinModal
         open={meshJoinOpen}
@@ -2410,6 +2812,32 @@ const App: React.FC = () => {
         setRetentionValue={setRetentionValue}
         retentionSaving={retentionSaving}
         onSave={saveRetention}
+      />
+      <PublicChannelProfileModal
+        open={publicChannelProfileOpen}
+        isMobile={isMobile}
+        onClose={() => {
+          setPublicChannelProfileOpen(false);
+          setPublicChannelProfileDetail(null);
+          setPublicChannelProfileError(null);
+        }}
+        loading={publicChannelProfileLoading}
+        error={publicChannelProfileError}
+        detail={publicChannelProfileDetail}
+        isOwner={
+          selectedThreadKind === "public_channel" &&
+          selectedThreadId !== null &&
+          publicChannelProfileDetail !== null &&
+          selectedThreadId === publicChannelProfileDetail.channelId &&
+          !!selectedThread?.isPublicChannelOwner
+        }
+        nameDraft={channelProfileNameDraft}
+        onNameDraftChange={setChannelProfileNameDraft}
+        bioDraft={channelProfileBioDraft}
+        onBioDraftChange={setChannelProfileBioDraft}
+        saveBusy={actionBusy === "publicChannelProfile"}
+        onSave={handleSavePublicChannelProfile}
+        resolveAvatarSrc={resolveAvatarSrc}
       />
       <GroupProfileModal
         open={groupProfileOpen}

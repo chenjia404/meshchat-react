@@ -18,6 +18,38 @@ export async function post<T = any>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+export async function patch<T = any>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(api(path), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: body != null ? JSON.stringify(body) : undefined
+  });
+  const data = (await r.json().catch(() => ({}))) as any;
+  if (!r.ok) throw new Error(data.error || data.message || r.statusText);
+  return data as T;
+}
+
+export async function put<T = any>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(api(path), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: body != null ? JSON.stringify(body) : undefined
+  });
+  const text = await r.text();
+  let data: any = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = {};
+  }
+  if (!r.ok) {
+    throw new Error(
+      data.error || data.message || (text && text.length < 500 ? text : "") || r.statusText
+    );
+  }
+  return data as T;
+}
+
 /** 刪除資源：優先 DELETE，405 時改 POST .../delete（兼容部分後端） */
 export async function deleteChatResource(pathNoQuery: string): Promise<void> {
   const url = api(pathNoQuery);

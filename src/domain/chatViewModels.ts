@@ -4,6 +4,7 @@ import type {
   ConversationRaw,
   GroupRaw,
   MeshserverGroupThread,
+  PublicChannelListEntry,
   ThreadKind
 } from "../types";
 import { avatarUrl } from "../api";
@@ -17,7 +18,8 @@ import {
   shortPeer,
   shortPeerTail,
   peekConversationPreview,
-  peekGroupPreview
+  peekGroupPreview,
+  relativeTimeFromUnixSec
 } from "../utils";
 
 /** 後端 unread_count 轉為非負整數 */
@@ -65,6 +67,7 @@ export function buildChatThreadListItems(
   conversations: ConversationRaw[],
   groups: GroupRaw[],
   meshGroups: MeshserverGroupThread[],
+  publicChannels: PublicChannelListEntry[],
   contactsRaw: ContactRaw[],
   contactAvatarMap: Map<string, string>
 ): ChatThreadListItem[] {
@@ -118,7 +121,26 @@ export function buildChatThreadListItems(
     }
   }));
 
-  const merged = [...directRows, ...groupRows, ...meshRows];
+  const publicRows: Row[] = publicChannels.map(pc => ({
+    /** 同秒时按 subscriptionOrder 与 GET /subscriptions 顺序一致 */
+    activityMs:
+      Math.max(0, pc.updatedAtSec) * 1000 +
+      (pc.subscriptionOrder != null
+        ? (1000 - Math.min(pc.subscriptionOrder, 999)) * 0.001
+        : 0),
+    item: {
+      id: pc.channelId,
+      kind: "public_channel" as ThreadKind,
+      title: pc.name.trim() || "公开频道",
+      subtitle: pc.isOwner ? "公开频道 · 我创建的" : `公开频道 · ${shortPeerTail(pc.ownerPeerId)}`,
+      lastMessage: pc.lastMessagePreview || "",
+      lastTime: relativeTimeFromUnixSec(pc.updatedAtSec),
+      publicChannelOwnerPeerId: pc.ownerPeerId,
+      isPublicChannelOwner: pc.isOwner
+    }
+  }));
+
+  const merged = [...directRows, ...groupRows, ...meshRows, ...publicRows];
   merged.sort((a, b) => {
     if (b.activityMs !== a.activityMs) return b.activityMs - a.activityMs;
     const tie = `${a.item.kind}:${a.item.id}`.localeCompare(

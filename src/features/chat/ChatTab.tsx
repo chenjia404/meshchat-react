@@ -13,7 +13,8 @@ import type {
   MeshserverGroupThread,
   MeshserverSyncMessage,
   DirectMessage,
-  GroupMessage
+  GroupMessage,
+  PublicChannelMessage
 } from "../../types";
 import { FallbackAvatar, textAvatarLetter } from "../../components/FallbackAvatar";
 import { ImageLightbox } from "../../components/ImageLightbox";
@@ -22,6 +23,7 @@ import {
   shortPeer,
   formatTime,
   formatTimeFromMs,
+  formatTimeFromUnixSec,
   deliveryStatusText,
   formatDeliverySummary,
   displayName,
@@ -31,7 +33,9 @@ import {
   isAudioMime,
   formatFileSize,
   extractMeshserverImageSrc,
-  looksLikeImageSrc
+  looksLikeImageSrc,
+  publicChannelMediaRef,
+  resolvePublicChannelAssetUrl
 } from "../../utils";
 import { directFileUrl, groupFileUrl } from "../../api";
 
@@ -197,6 +201,9 @@ export interface ChatThreadListItem {
   avatarUrl?: string;
   connectionName?: string;
   myUserId?: string;
+  /** 去中心化公开频道 owner */
+  publicChannelOwnerPeerId?: string;
+  isPublicChannelOwner?: boolean;
 }
 
 export interface ChatTabProps {
@@ -225,6 +232,7 @@ export interface ChatTabProps {
   setContactsMobileView: (v: "list" | "detail") => void;
   setActiveTab: (tab: "chat" | "contacts" | "me") => void;
   openGroupProfile: (groupId: string) => void;
+  openPublicChannelProfile: (channelId: string) => void;
   peerStatusMap: Map<string, any>;
   openRetentionModal: () => void;
   selectedConversation: ConversationRaw | null;
@@ -233,7 +241,7 @@ export interface ChatTabProps {
   openGroupRetentionModal: () => void;
   fileSending: null | { text: string; error?: boolean };
   messagesLoading: boolean;
-  messages: Array<DirectMessage | GroupMessage | MeshserverSyncMessage>;
+  messages: Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>;
   meshGroups: MeshserverGroupThread[];
   me: Me | null;
   contactsRaw: ContactRaw[];
@@ -245,6 +253,8 @@ export interface ChatTabProps {
       canRevoke: boolean;
       forwardText: string;
       forwardFile?: { url: string; fileName: string; mimeType: string };
+      canEdit?: boolean;
+      editInitialText?: string;
     }
   ) => {
     onPointerDown: React.PointerEventHandler;
@@ -286,6 +296,7 @@ export function ChatTab(props: ChatTabProps) {
     setContactsMobileView,
     setActiveTab,
     openGroupProfile,
+    openPublicChannelProfile,
     peerStatusMap,
     openRetentionModal,
     selectedConversation,
@@ -322,6 +333,9 @@ export function ChatTab(props: ChatTabProps) {
   const handleInputAreaDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (selectedThreadKind === "public_channel" && !selectedThread?.isPublicChannelOwner) {
+      return;
+    }
     const files = e.dataTransfer?.files;
     if (!files?.length) return;
     for (const file of Array.from(files)) {
@@ -335,10 +349,20 @@ export function ChatTab(props: ChatTabProps) {
 
   const messagesScrollRef = React.useRef<HTMLDivElement | null>(null);
   const initialScrollDoneKeyRef = React.useRef<string | null>(null);
+  /** 会话列表每次点击 +1，用于重选同一会话时仍能重新执行「未读 / 最新」滚动 */
+  const [sessionListOpenSeq, setSessionListOpenSeq] = React.useState(0);
   const [atBottom, setAtBottom] = React.useState(true);
+  const prevSendingRef = React.useRef(false);
+  const prevFileSendingRef = React.useRef(fileSending);
+  const scrollAfterFilePendingRef = React.useRef(false);
 
   React.useEffect(() => {
     initialScrollDoneKeyRef.current = null;
+    scrollAfterFilePendingRef.current = false;
+    prevSendingRef.current = false;
+    // 仅随会话切换重置；fileSending 取本次渲染值以对齐 ref
+    prevFileSendingRef.current = fileSending;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 故意不在 fileSending 变化时重置，否则会打断发文件后的滚动
   }, [selectedThreadId, selectedThreadKind]);
 
   const handleMessagesScroll = React.useCallback(() => {
@@ -350,13 +374,46 @@ export function ChatTab(props: ChatTabProps) {
     setAtBottom(bottom);
   }, []);
 
-  const scrollToLatest = React.useCallback(() => {
+  const scrollToLatest = React.useCallback((behavior: ScrollBehavior = "smooth") => {
     const el = messagesScrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    el.scrollTo({ top: el.scrollHeight, behavior });
     setAtBottom(true);
   }, []);
 
+  /** 发送文本成功后：滚到底部 */
+  React.useEffect(() => {
+    if (prevSendingRef.current && !sending) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          scrollToLatest("auto");
+        });
+      });
+    }
+    prevSendingRef.current = sending;
+  }, [sending, scrollToLatest]);
+
+  /** 上传文件结束（成功清空上传提示）后：等消息列表加载完再滚到底部 */
+  React.useEffect(() => {
+    const prev = prevFileSendingRef.current;
+    prevFileSendingRef.current = fileSending;
+    if (prev && !prev.error && fileSending === null) {
+      scrollAfterFilePendingRef.current = true;
+    }
+  }, [fileSending]);
+
+  React.useEffect(() => {
+    if (!scrollAfterFilePendingRef.current) return;
+    if (messagesLoading) return;
+    scrollAfterFilePendingRef.current = false;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToLatest("auto");
+      });
+    });
+  }, [messagesLoading, messages.length, scrollToLatest]);
+
+  /** 从会话列表进入：有未读则滚到估算的第一条未读，否则滚到最新 */
   React.useEffect(() => {
     if (!selectedThreadId) return;
     if (messagesLoading) return;
@@ -367,7 +424,10 @@ export function ChatTab(props: ChatTabProps) {
 
     const unreadRaw = pendingScrollUnreadRef.current;
     pendingScrollUnreadRef.current = null;
-    const unread = Math.max(0, unreadRaw ?? 0);
+    const unread = Math.min(
+      messages.length,
+      Math.max(0, unreadRaw ?? 0)
+    );
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -395,7 +455,8 @@ export function ChatTab(props: ChatTabProps) {
     messagesLoading,
     messages.length,
     pendingScrollUnreadRef,
-    handleMessagesScroll
+    handleMessagesScroll,
+    sessionListOpenSeq
   ]);
 
   return (
@@ -437,7 +498,9 @@ export function ChatTab(props: ChatTabProps) {
                     key={`${thread.kind}:${thread.id}`}
                     {...(directRowMenuHandlers || {})}
                     onClick={() => {
+                      initialScrollDoneKeyRef.current = null;
                       pendingScrollUnreadRef.current = thread.unreadCount ?? 0;
+                      setSessionListOpenSeq(s => s + 1);
                       setSelectedThreadId(thread.id);
                       setSelectedThreadKind(thread.kind);
                       markThreadAsRead(thread.kind, thread.id);
@@ -617,6 +680,10 @@ export function ChatTab(props: ChatTabProps) {
                         }
                         if (selectedThread.kind === "group") {
                           openGroupProfile(selectedThread.id);
+                          return;
+                        }
+                        if (selectedThread.kind === "public_channel") {
+                          openPublicChannelProfile(selectedThread.id);
                         }
                       }}
                       style={{
@@ -624,7 +691,9 @@ export function ChatTab(props: ChatTabProps) {
                         alignItems: "center",
                         gap: 10,
                         cursor:
-                          selectedThread.kind === "direct" || selectedThread.kind === "group"
+                          selectedThread.kind === "direct" ||
+                          selectedThread.kind === "group" ||
+                          selectedThread.kind === "public_channel"
                             ? "pointer"
                             : "default"
                       }}
@@ -633,10 +702,14 @@ export function ChatTab(props: ChatTabProps) {
                           ? "查看好友资料"
                           : selectedThread.kind === "group"
                             ? "查看群资料"
-                            : ""
+                            : selectedThread.kind === "public_channel"
+                              ? "查看频道资料"
+                              : ""
                       }
                       role={
-                        selectedThread.kind === "direct" || selectedThread.kind === "group"
+                        selectedThread.kind === "direct" ||
+                        selectedThread.kind === "group" ||
+                        selectedThread.kind === "public_channel"
                           ? "button"
                           : undefined
                       }
@@ -649,9 +722,13 @@ export function ChatTab(props: ChatTabProps) {
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontWeight: 700 }}>{selectedThread.title}</div>
                         <div style={{ fontSize: 12, opacity: 0.7 }}>
-                          {selectedThread.kind === "group"
-                            ? `群聊 · ${selectedThread.subtitle || ""}`
-                            : selectedThread.subtitle || ""}
+                          {selectedThread.kind === "public_channel"
+                            ? selectedThread.isPublicChannelOwner
+                              ? "公开频道 · 可发布"
+                              : "公开频道 · 只读"
+                            : selectedThread.kind === "group"
+                              ? `群聊 · ${selectedThread.subtitle || ""}`
+                              : selectedThread.subtitle || ""}
                         </div>
                       </div>
                     </div>
@@ -947,6 +1024,225 @@ export function ChatTab(props: ChatTabProps) {
                               caption
                             ) : (
                               "[非文本消息]"
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : selectedThreadKind === "public_channel" ? (
+                  [...(messages as PublicChannelMessage[])].sort((a, b) => a.message_id - b.message_id).map((m, idx) => {
+                    const isDeleted = m.is_deleted || m.message_type === "deleted";
+                    const fromMe = !!me?.peer_id && m.author_peer_id === me.peer_id;
+                    const senderLabel = fromMe
+                      ? "我"
+                      : shortPeer(m.author_peer_id || m.creator_peer_id || "?");
+                    const letter = textAvatarLetter(senderLabel);
+                    const textBody = (m.content?.text ?? "").trim();
+                    const t = m.updated_at ?? m.created_at;
+                    const img0 = m.content?.images?.[0] as Record<string, unknown> | undefined;
+                    const rawImgUrl = publicChannelMediaRef(img0);
+                    const imgFileName = String(
+                      img0?.file_name ?? img0?.name ?? img0?.fileName ?? ""
+                    ).trim();
+                    const firstImageUrl = rawImgUrl
+                      ? resolvePublicChannelAssetUrl(rawImgUrl, imgFileName)
+                      : "";
+                    const file0 = m.content?.files?.[0] as Record<string, unknown> | undefined;
+                    const rawFileUrl = publicChannelMediaRef(file0);
+                    const fileName = String(file0?.file_name ?? file0?.name ?? "file").trim() || "file";
+                    const firstFileUrl = rawFileUrl
+                      ? resolvePublicChannelAssetUrl(rawFileUrl, fileName)
+                      : "";
+                    const fileMime = String(
+                      file0?.mime_type ?? file0?.mime ?? "application/octet-stream"
+                    ).trim();
+                    const fileSize =
+                      typeof file0?.size === "number" ? file0.size : undefined;
+                    const imgMime = String(img0?.mime_type ?? img0?.mime ?? "").trim();
+                    /** 与 images[] / files[] 二选一展示一致：有图链优先走图片气泡 */
+                    const showImageBubble = Boolean(firstImageUrl);
+                    const showFileBubble = Boolean(firstFileUrl) && !showImageBubble;
+                    const forwardText = (() => {
+                      if (isDeleted) return "";
+                      if (firstImageUrl) {
+                        return textBody
+                          ? `${textBody}\n[图片]\n${firstImageUrl}`
+                          : `[图片]\n${firstImageUrl}`;
+                      }
+                      if (firstFileUrl) {
+                        return textBody
+                          ? `${textBody}\n[文件] ${fileName}\n${firstFileUrl}`
+                          : `[文件] ${fileName}\n${firstFileUrl}`;
+                      }
+                      return textBody;
+                    })();
+
+                    const forwardFile = firstImageUrl
+                      ? {
+                          url: firstImageUrl,
+                          fileName:
+                            fileName && /\.(png|jpe?g|gif|webp)$/i.test(fileName)
+                              ? fileName
+                              : `image-${m.message_id}.jpg`,
+                          mimeType: isImageMime(imgMime) ? imgMime : "image/jpeg"
+                        }
+                      : firstFileUrl
+                        ? {
+                            url: firstFileUrl,
+                            fileName,
+                            mimeType: fileMime || "application/octet-stream"
+                          }
+                        : undefined;
+
+                    const canEditPublic =
+                      !!selectedThread?.isPublicChannelOwner &&
+                      !isDeleted &&
+                      !firstImageUrl &&
+                      !firstFileUrl &&
+                      (m.message_type === "text" || textBody.trim().length > 0);
+
+                    return (
+                      <div
+                        key={`${m.message_id}-${m.version ?? 1}`}
+                        data-msg-idx={idx}
+                        style={{
+                          display: "flex",
+                          justifyContent: fromMe ? "flex-end" : "flex-start",
+                          gap: 8,
+                          marginBottom: 10
+                        }}
+                      >
+                        {!fromMe && (
+                          <div
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: "50%",
+                              background: "#1f2933",
+                              color: "#e5e7eb",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: 13,
+                              flexShrink: 0
+                            }}
+                          >
+                            {letter}
+                          </div>
+                        )}
+                        <div style={{ maxWidth: "78%" }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              opacity: 0.7,
+                              marginBottom: 4,
+                              textAlign: fromMe ? "right" : "left"
+                            }}
+                          >
+                            {senderLabel} · {formatTimeFromUnixSec(t)}
+                          </div>
+                          <div
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              background: fromMe
+                                ? "rgba(88,166,255,0.16)"
+                                : "rgba(255,255,255,0.06)",
+                              border: "1px solid rgba(255,255,255,0.10)",
+                              whiteSpace: "pre-wrap",
+                              overflowWrap: "anywhere",
+                              wordBreak: "break-word"
+                            }}
+                            {...createLongPressHandlers(
+                              "public_channel",
+                              selectedThreadId || "",
+                              String(m.message_id),
+                              {
+                                canRevoke: !!selectedThread?.isPublicChannelOwner && !isDeleted,
+                                forwardText,
+                                forwardFile,
+                                canEdit: canEditPublic,
+                                editInitialText: textBody
+                              }
+                            )}
+                          >
+                            {isDeleted ? (
+                              <span style={{ opacity: 0.65 }}>该消息已删除</span>
+                            ) : showImageBubble && firstImageUrl ? (
+                              <div>
+                                <img
+                                  src={firstImageUrl}
+                                  alt={textBody || "image"}
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setImagePreview({
+                                      src: firstImageUrl,
+                                      alt: textBody || "image"
+                                    });
+                                  }}
+                                  onKeyDown={e => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setImagePreview({
+                                        src: firstImageUrl,
+                                        alt: textBody || "image"
+                                      });
+                                    }
+                                  }}
+                                  style={{
+                                    maxWidth: "100%",
+                                    borderRadius: 10,
+                                    display: "block",
+                                    cursor: "zoom-in"
+                                  }}
+                                />
+                                {textBody ? (
+                                  <div
+                                    style={{
+                                      marginTop: 8,
+                                      fontSize: 14,
+                                      whiteSpace: "pre-wrap",
+                                      overflowWrap: "anywhere",
+                                      wordBreak: "break-word"
+                                    }}
+                                  >
+                                    {textBody}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : showFileBubble && firstFileUrl ? (
+                              <div>
+                                <FileMessageContent
+                                  downloadUrl={firstFileUrl}
+                                  fileName={fileName}
+                                  mimeType={fileMime}
+                                  fileSize={fileSize}
+                                  onImagePreview={(src, alt) =>
+                                    setImagePreview({ src, alt })
+                                  }
+                                />
+                                {textBody ? (
+                                  <div
+                                    style={{
+                                      marginTop: 8,
+                                      fontSize: 14,
+                                      whiteSpace: "pre-wrap",
+                                      overflowWrap: "anywhere",
+                                      wordBreak: "break-word"
+                                    }}
+                                  >
+                                    {textBody}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : textBody ? (
+                              textBody
+                            ) : (
+                              <span style={{ opacity: 0.75 }}>[非文本消息]</span>
                             )}
                           </div>
                         </div>
@@ -1308,7 +1604,7 @@ export function ChatTab(props: ChatTabProps) {
                 {!atBottom && !messagesLoading && messages.length > 0 ? (
                   <button
                     type="button"
-                    onClick={scrollToLatest}
+                    onClick={() => scrollToLatest()}
                     style={{
                       position: "absolute",
                       right: 10,
@@ -1389,6 +1685,72 @@ export function ChatTab(props: ChatTabProps) {
                         上传图片
                       </button>
                     </div>
+                  ) : selectedThreadKind === "public_channel" ? (
+                    selectedThread?.isPublicChannelOwner ? (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-end",
+                          gap: 10,
+                          padding: 8
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <MessageInput
+                            placeholder="文字，或拖拽/粘贴/选择图片、视频、音频与文件…"
+                            attachButton={false}
+                            onSend={(_h, textContent) =>
+                              void handleSendMessage(textContent)
+                            }
+                          />
+                        </div>
+                        <input
+                          id="public-channel-file-input"
+                          type="file"
+                          multiple
+                          style={{ display: "none" }}
+                          onChange={e => {
+                            const fs = e.target.files;
+                            if (!fs?.length) return;
+                            for (const f of Array.from(fs)) void sendFileForCurrentThread(f);
+                            e.currentTarget.value = "";
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const el = document.getElementById(
+                              "public-channel-file-input"
+                            ) as HTMLInputElement | null;
+                            el?.click();
+                          }}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 12,
+                            border: "1px solid rgba(255,255,255,0.14)",
+                            background: "transparent",
+                            color: "#e5e7eb",
+                            cursor: "pointer",
+                            fontWeight: 800,
+                            marginBottom: 2,
+                            flexShrink: 0
+                          }}
+                        >
+                          附件
+                        </button>
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          padding: "12px 14px",
+                          fontSize: 13,
+                          opacity: 0.72,
+                          color: "#9ca3af"
+                        }}
+                      >
+                        你不是频道创建者，仅可浏览历史消息。
+                      </div>
+                    )
                   ) : (
                     <MessageInput
                       placeholder="输入讯息…（Shift+Enter 换行，可拖入或粘贴文件）"

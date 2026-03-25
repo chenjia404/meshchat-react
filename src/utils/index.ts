@@ -8,7 +8,9 @@ export {
   shortPeerTail,
   formatTime,
   formatTimeFromMs,
-  relativeTime
+  formatTimeFromUnixSec,
+  relativeTime,
+  relativeTimeFromUnixSec
 } from "./time";
 export { deliveryStatusText, formatDeliverySummary } from "./delivery";
 export { formatFileSize } from "./fileSize";
@@ -48,3 +50,18 @@ export {
   looksLikeImageSrc
 } from "./meshMedia";
 export { extractMeshserverImageSrc, mergeMeshSyncMessages } from "./meshMessages";
+export {
+  normalizePublicChannelMessages,
+  peekPublicChannelPreview,
+  parsePublicChannelProfile,
+  parsePublicChannelProfileDetail,
+  extractChannelIdFromCreateResponse,
+  peerIdsEqual,
+  normalizeChannelSubscriptionsResponse,
+  publicChannelListEntryFromSummary,
+  mergePublicChannelPreviewFromPrevious,
+  inferPublicChannelMessageTypeFromMime,
+  publicChannelMediaRef,
+  resolvePublicChannelAssetUrl,
+  postPublicChannelFileMessage
+} from "./publicChannelApi";

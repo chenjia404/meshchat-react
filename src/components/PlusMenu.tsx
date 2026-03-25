@@ -6,6 +6,8 @@ export interface PlusMenuProps {
   onAddFriend: () => void;
   onCreateGroup: () => void;
   onMeshJoin: () => void;
+  onCreatePublicChannel: () => void;
+  onSubscribePublicChannel: () => void;
 }
 
 export function PlusMenu({
@@ -13,7 +15,9 @@ export function PlusMenu({
   onClose,
   onAddFriend,
   onCreateGroup,
-  onMeshJoin
+  onMeshJoin,
+  onCreatePublicChannel,
+  onSubscribePublicChannel
 }: PlusMenuProps) {
   if (!open) return null;
   return (
@@ -77,6 +81,50 @@ export function PlusMenu({
           }}
         >
           发起群聊
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            onCreatePublicChannel();
+            onClose();
+          }}
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: "10px 10px",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "transparent",
+            color: "#e5e7eb",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: 700,
+            textAlign: "left"
+          }}
+        >
+          创建公开频道
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            onSubscribePublicChannel();
+            onClose();
+          }}
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: "10px 10px",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "transparent",
+            color: "#e5e7eb",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: 700,
+            textAlign: "left"
+          }}
+        >
+          订阅公开频道
         </button>
         <button
           type="button"

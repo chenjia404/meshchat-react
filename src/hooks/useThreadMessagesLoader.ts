@@ -6,9 +6,14 @@ import type {
   GroupMessage,
   MeshserverGroupThread,
   MeshserverSyncMessage,
+  PublicChannelMessage,
   ThreadKind
 } from "../types";
-import { mergeMeshSyncMessages, normalizeList } from "../utils";
+import {
+  mergeMeshSyncMessages,
+  normalizeList,
+  normalizePublicChannelMessages
+} from "../utils";
 
 export interface UseThreadMessagesLoaderParams {
   meshGroups: MeshserverGroupThread[];
@@ -16,10 +21,12 @@ export interface UseThreadMessagesLoaderParams {
   selectedThreadKind: ThreadKind;
   activeTab: "chat" | "contacts" | "me";
   messagesRef: React.MutableRefObject<
-    Array<DirectMessage | GroupMessage | MeshserverSyncMessage>
+    Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>
   >;
   setMessages: React.Dispatch<
-    React.SetStateAction<Array<DirectMessage | GroupMessage | MeshserverSyncMessage>>
+    React.SetStateAction<
+      Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>
+    >
   >;
   setMessagesLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setSelectedGroupDetails: React.Dispatch<React.SetStateAction<GroupDetails | null>>;
@@ -50,7 +57,11 @@ export function useThreadMessagesLoader({
     ) => {
       const silent = !!opts?.silent;
       try {
-        if (!silent) setMessagesLoading(true);
+        if (!silent) {
+          setMessagesLoading(true);
+          // 切换会话时先清空，避免未加载完成时用上一会话的条数去算未读锚点
+          setMessages([]);
+        }
         if (kind === "group") {
           if (!silent) {
             const details = await get<GroupDetails>(
@@ -90,6 +101,12 @@ export function useThreadMessagesLoader({
           } else {
             setMessages(incoming);
           }
+        } else if (kind === "public_channel") {
+          if (!silent) setSelectedGroupDetails(null);
+          const resp = await get<unknown>(
+            `/api/v1/public-channels/${encodeURIComponent(id)}/messages?limit=50`
+          ).catch(() => null);
+          setMessages(normalizePublicChannelMessages(resp ?? []));
         } else {
           if (!silent) setSelectedGroupDetails(null);
           if (silent) {
