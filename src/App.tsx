@@ -411,29 +411,47 @@ const App: React.FC = () => {
     [me?.peer_id]
   );
 
-  const openPublicChannelProfile = useCallback(async (channelId: string) => {
-    const id = channelId.trim();
-    if (!id) return;
-    setPublicChannelProfileOpen(true);
-    setPublicChannelProfileLoading(true);
-    setPublicChannelProfileError(null);
-    setPublicChannelProfileDetail(null);
-    try {
-      const raw = await get<unknown>(`/api/v1/public-channels/${encodeURIComponent(id)}`);
-      const parsed = parsePublicChannelProfileDetail(raw, id);
-      if (parsed) {
-        setPublicChannelProfileDetail(parsed);
-        setChannelProfileNameDraft(parsed.name);
-        setChannelProfileBioDraft(parsed.bio);
-      } else {
-        setPublicChannelProfileError("无法解析频道资料");
+  const openPublicChannelProfile = useCallback(
+    async (channelId: string) => {
+      const id = channelId.trim();
+      if (!id) return;
+      setPublicChannelProfileOpen(true);
+      setPublicChannelProfileLoading(true);
+      setPublicChannelProfileError(null);
+      setPublicChannelProfileDetail(null);
+      try {
+        await post(`/api/v1/public-channels/${encodeURIComponent(id)}/sync`, {}).catch(
+          () => null
+        );
+        const raw = await get<unknown>(
+          `/api/v1/public-channels/${encodeURIComponent(id)}`
+        );
+        const parsed = parsePublicChannelProfileDetail(raw, id);
+        if (parsed) {
+          setPublicChannelProfileDetail(parsed);
+          setChannelProfileNameDraft(parsed.name);
+          setChannelProfileBioDraft(parsed.bio);
+        } else {
+          setPublicChannelProfileError("无法解析频道资料");
+        }
+        if (
+          parsed &&
+          selectedThreadKind === "public_channel" &&
+          selectedThreadId === id
+        ) {
+          await loadThreadMessages("public_channel", id, {
+            silent: true,
+            skipPublicChannelSync: true
+          });
+        }
+      } catch (err: any) {
+        setPublicChannelProfileError(err?.message || String(err));
+      } finally {
+        setPublicChannelProfileLoading(false);
       }
-    } catch (err: any) {
-      setPublicChannelProfileError(err?.message || String(err));
-    } finally {
-      setPublicChannelProfileLoading(false);
-    }
-  }, []);
+    },
+    [loadThreadMessages, selectedThreadId, selectedThreadKind]
+  );
 
   const handleSavePublicChannelProfile = useCallback(async () => {
     const id = publicChannelProfileDetail?.channelId?.trim();

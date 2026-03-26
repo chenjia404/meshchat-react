@@ -38,6 +38,7 @@ const POLL_MS = 4000;
  * 載入當前線程訊息、切換線程時重載一次。
  * - 私聊（direct）：僅在切換會話時 GET /messages；之後依 WebSocket 與 silent sync+拉取，不做定時輪詢。
  * - 群聊 / mesh：維持定時輪詢增量同步。
+ * - 公开频道：首次进入 POST …/sync → GET …/{id} → GET …/messages?limit=20；与资料页顺序一致；定时轮询仅拉消息。
  */
 export function useThreadMessagesLoader({
   meshGroups,
@@ -49,11 +50,16 @@ export function useThreadMessagesLoader({
   setMessagesLoading,
   setSelectedGroupDetails
 }: UseThreadMessagesLoaderParams) {
-  const loadThreadMessages = useCallback(
+  const   loadThreadMessages = useCallback(
     async (
       kind: ThreadKind,
       id: string,
-      opts?: { silent?: boolean; meshAfterSeq?: number }
+      opts?: {
+        silent?: boolean;
+        meshAfterSeq?: number;
+        /** 已在打开资料页等场景 POST 过 sync，避免重复 */
+        skipPublicChannelSync?: boolean;
+      }
     ) => {
       const silent = !!opts?.silent;
       try {
@@ -103,8 +109,19 @@ export function useThreadMessagesLoader({
           }
         } else if (kind === "public_channel") {
           if (!silent) setSelectedGroupDetails(null);
+          const needSync =
+            !silent && !opts?.skipPublicChannelSync;
+          if (needSync) {
+            await post(
+              `/api/v1/public-channels/${encodeURIComponent(id)}/sync`,
+              {}
+            ).catch(() => null);
+            await get<unknown>(
+              `/api/v1/public-channels/${encodeURIComponent(id)}`
+            ).catch(() => null);
+          }
           const resp = await get<unknown>(
-            `/api/v1/public-channels/${encodeURIComponent(id)}/messages?limit=50`
+            `/api/v1/public-channels/${encodeURIComponent(id)}/messages?limit=20`
           ).catch(() => null);
           setMessages(normalizePublicChannelMessages(resp ?? []));
         } else {
