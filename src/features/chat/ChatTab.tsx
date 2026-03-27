@@ -47,6 +47,13 @@ function threadLastMessagePreview(text: string | undefined, maxChars = 36): stri
   return t.slice(0, maxChars) + "…";
 }
 
+/** 统一处理消息换行：兼容真实换行与被转义的 "\\n" */
+function normalizeMessageMultilineText(text: string | undefined): string {
+  const normalized = (text ?? "").replace(/\r\n/g, "\n");
+  if (normalized.includes("\n")) return normalized;
+  return normalized.replace(/\\n/g, "\n");
+}
+
 function FileMessageContent(props: {
   downloadUrl: string;
   fileName?: string;
@@ -878,7 +885,7 @@ export function ChatTab(props: ChatTabProps) {
                       !!thread?.myUserId && m.sender_user_id === thread.myUserId;
                     const senderName = fromMe ? "我" : m.sender_user_id || "未知";
                     const letter = textAvatarLetter(senderName);
-                    const caption = m.content?.text || "";
+                    const caption = normalizeMessageMultilineText(m.content?.text);
                     const imageSrc = extractMeshserverImageSrc(
                       m,
                       thread?.connectionName
@@ -1038,7 +1045,8 @@ export function ChatTab(props: ChatTabProps) {
                       ? "我"
                       : shortPeer(m.author_peer_id || m.creator_peer_id || "?");
                     const letter = textAvatarLetter(senderLabel);
-                    const textBody = (m.content?.text ?? "").trim();
+                    const textBody = normalizeMessageMultilineText(m.content?.text);
+                    const textBodyTrimmed = textBody.trim();
                     const t = m.updated_at ?? m.created_at;
                     const img0 = m.content?.images?.[0] as Record<string, unknown> | undefined;
                     const rawImgUrl = publicChannelMediaRef(img0);
@@ -1066,12 +1074,12 @@ export function ChatTab(props: ChatTabProps) {
                     const forwardText = (() => {
                       if (isDeleted) return "";
                       if (firstImageUrl) {
-                        return textBody
+                        return textBodyTrimmed
                           ? `${textBody}\n[图片]\n${firstImageUrl}`
                           : `[图片]\n${firstImageUrl}`;
                       }
                       if (firstFileUrl) {
-                        return textBody
+                        return textBodyTrimmed
                           ? `${textBody}\n[文件] ${fileName}\n${firstFileUrl}`
                           : `[文件] ${fileName}\n${firstFileUrl}`;
                       }
@@ -1100,7 +1108,7 @@ export function ChatTab(props: ChatTabProps) {
                       !isDeleted &&
                       !firstImageUrl &&
                       !firstFileUrl &&
-                      (m.message_type === "text" || textBody.trim().length > 0);
+                      (m.message_type === "text" || textBodyTrimmed.length > 0);
 
                     return (
                       <div
@@ -1200,7 +1208,7 @@ export function ChatTab(props: ChatTabProps) {
                                     cursor: "zoom-in"
                                   }}
                                 />
-                                {textBody ? (
+                                {textBodyTrimmed ? (
                                   <div
                                     style={{
                                       marginTop: 8,
@@ -1225,7 +1233,7 @@ export function ChatTab(props: ChatTabProps) {
                                     setImagePreview({ src, alt })
                                   }
                                 />
-                                {textBody ? (
+                                {textBodyTrimmed ? (
                                   <div
                                     style={{
                                       marginTop: 8,
@@ -1239,7 +1247,7 @@ export function ChatTab(props: ChatTabProps) {
                                   </div>
                                 ) : null}
                               </div>
-                            ) : textBody ? (
+                            ) : textBodyTrimmed ? (
                               textBody
                             ) : (
                               <span style={{ opacity: 0.75 }}>[非文本消息]</span>
@@ -1270,7 +1278,8 @@ export function ChatTab(props: ChatTabProps) {
                         );
                     const letter = textAvatarLetter(senderName);
                     const isFile = m.msg_type === "group_chat_file";
-                    const text = m.plaintext || "";
+                    const text = normalizeMessageMultilineText(m.plaintext);
+                    const textTrimmed = text.trim();
                     const gid = m.group_id || selectedThreadId || "";
                     const groupForwardText =
                       isFile && gid
@@ -1366,7 +1375,7 @@ export function ChatTab(props: ChatTabProps) {
                                   setImagePreview({ src, alt })
                                 }
                               />
-                            ) : text ? (
+                            ) : textTrimmed ? (
                               text
                             ) : (
                               "[非文本消息]"
@@ -1385,7 +1394,8 @@ export function ChatTab(props: ChatTabProps) {
                     const senderName = fromMe ? "我" : selectedThread.title;
                     const letter = textAvatarLetter(senderName);
                     const isFile = m.msg_type === "chat_file";
-                    const text = m.plaintext || "";
+                    const text = normalizeMessageMultilineText(m.plaintext);
+                    const textTrimmed = text.trim();
                     const convId = m.conversation_id || selectedThreadId || "";
                     const directForwardText =
                       isFile && convId
@@ -1583,7 +1593,7 @@ export function ChatTab(props: ChatTabProps) {
                                   setImagePreview({ src, alt })
                                 }
                               />
-                            ) : text ? (
+                            ) : textTrimmed ? (
                               text
                             ) : (
                               "[非文本消息]"
