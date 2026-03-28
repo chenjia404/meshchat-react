@@ -726,6 +726,7 @@ export function ChatTab(props: ChatTabProps) {
                         cursor:
                           selectedThread.kind === "direct" ||
                           selectedThread.kind === "group" ||
+                          selectedThread.kind === "meshchat_super_group" ||
                           selectedThread.kind === "public_channel"
                             ? "pointer"
                             : "default"
@@ -735,6 +736,8 @@ export function ChatTab(props: ChatTabProps) {
                           ? "查看好友资料"
                           : selectedThread.kind === "group"
                             ? "查看群资料"
+                            : selectedThread.kind === "meshchat_super_group"
+                              ? "查看超级群资料与退出"
                             : selectedThread.kind === "public_channel"
                               ? "查看频道资料"
                               : ""
@@ -742,6 +745,7 @@ export function ChatTab(props: ChatTabProps) {
                       role={
                         selectedThread.kind === "direct" ||
                         selectedThread.kind === "group" ||
+                        selectedThread.kind === "meshchat_super_group" ||
                         selectedThread.kind === "public_channel"
                           ? "button"
                           : undefined

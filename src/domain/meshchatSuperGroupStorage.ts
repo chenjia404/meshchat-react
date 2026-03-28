@@ -1,4 +1,4 @@
-﻿import type { MeshchatSuperGroupListEntry } from "../types";
+import type { MeshchatSuperGroupListEntry } from "../types";
 
 const STORAGE_KEY = "react_chat_meshchat_super_v1";
 
@@ -90,4 +90,13 @@ export function upsertMeshchatSuperGroupEntry(
     lastMessagePreview: next.lastMessagePreview ?? old?.lastMessagePreview
   });
   return Array.from(map.values());
+}
+
+export function removeMeshchatSuperGroupEntry(
+  prev: MeshchatSuperGroupListEntry[],
+  threadId: string
+): MeshchatSuperGroupListEntry[] {
+  const id = threadId.trim();
+  if (!id) return prev;
+  return prev.filter(e => e.threadId !== id);
 }

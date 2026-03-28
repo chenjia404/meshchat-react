@@ -28,6 +28,7 @@ import {
   api,
   get,
   post,
+  postMultipart,
   put,
   deleteChatResource,
   avatarUrl,
@@ -73,6 +74,7 @@ import {
 import {
   loginMeshchatServer,
   joinMeshchatGroup,
+  leaveMeshchatGroup,
   getMeshchatGroup,
   getMeshchatMessages,
   postMeshchatTextMessage,
@@ -84,7 +86,8 @@ import {
   getStoredMeshchatToken,
   retractMeshchatMessage,
   patchMeshchatGroup,
-  invitePeerToMeshchatGroup
+  invitePeerToMeshchatGroup,
+  syncMeshchatProfileToJoinedServers
 } from "./utils/meshchatApi";
 
 import { createListRowMenuHandlers } from "./hooks/createListRowMenuHandlers";
@@ -107,6 +110,7 @@ import {
   loadMeshchatSuperGroupEntries,
   saveMeshchatSuperGroupEntries,
   upsertMeshchatSuperGroupEntry,
+  removeMeshchatSuperGroupEntry,
   makeMeshchatThreadId
 } from "./domain";
 import { FallbackAvatar, textAvatarLetter } from "./components/FallbackAvatar";
@@ -900,6 +904,12 @@ const App: React.FC = () => {
         ]);
         const meNormalized = normalizeChatMe(meRes);
         setMe(meNormalized);
+        void syncMeshchatProfileToJoinedServers(
+          meNormalized,
+          loadMeshchatSuperGroupEntries().map(e => e.serverBase)
+        ).catch((err: unknown) =>
+          console.warn("MeshChat 服务器资料同步失败:", err)
+        );
         setMeNicknameDraft(meNormalized?.nickname || "");
         setMeBioDraft(meNormalized?.bio || "");
         setContactsRaw(normalizeEntityList<ContactRaw>(contactsRes, ["contacts"]));
@@ -2086,6 +2096,9 @@ const App: React.FC = () => {
       setSelectedThreadId(threadId);
       markThreadAsRead("meshchat_super_group", threadId);
       void loadThreadMessages("meshchat_super_group", threadId);
+      void syncMeshchatProfileToJoinedServers(me, [serverBase]).catch((err: unknown) =>
+        console.warn("MeshChat 服务器资料同步失败:", err)
+      );
     } catch (err: any) {
       alert("加入失败：" + (err?.message || String(err)));
     } finally {
@@ -2655,6 +2668,55 @@ const App: React.FC = () => {
     }
   };
 
+  const handleLeaveMeshchatSuperGroup = () => {
+    if (selectedThreadKind !== "meshchat_super_group" || !selectedThreadId) return;
+    const entry = meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId);
+    if (!entry) return;
+    if (
+      !window.confirm(
+        "确定要退出该超级群吗？本机会先移除该会话；若服务器暂时无响应，也会从本机删除。若要再次加入请使用群链接。"
+      )
+    ) {
+      return;
+    }
+    const tid = entry.threadId;
+    const serverBase = entry.serverBase;
+    const groupId = entry.groupId;
+
+    setMeshchatSuperGroupEntries(prev => removeMeshchatSuperGroupEntry(prev, tid));
+    setThreadUnreadCounts(prev => {
+      const key = threadUnreadKey("meshchat_super_group", tid);
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    if (selectedThreadId === tid) {
+      setSelectedThreadId(null);
+      setMessages([]);
+    }
+    setMeshchatProfileOpen(false);
+    setMeshchatProfileError(null);
+    setMeshchatInviteQuery("");
+    setMeshchatInviteIds(new Set());
+
+    const pid = (me?.peer_id || "").trim();
+    if (!pid) return;
+
+    void (async () => {
+      try {
+        let token = getStoredMeshchatToken(serverBase);
+        if (!token) {
+          const login = await loginMeshchatServer(serverBase, pid);
+          token = login.token;
+        }
+        await leaveMeshchatGroup(serverBase, groupId, token);
+      } catch (err: unknown) {
+        console.warn("MeshChat 服务端退出未成功（本机已移除会话）:", err);
+      }
+    })();
+  };
+
   const handleInviteMeshchatMembers = async () => {
     if (selectedThreadKind !== "meshchat_super_group" || !selectedThreadId) return;
     const entry = meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId);
@@ -2842,6 +2904,43 @@ const App: React.FC = () => {
     }
   };
 
+  const handleMyAvatarFile = useCallback(
+    async (file: File) => {
+      if (!isImageMime(file.type)) {
+        alert("请选择图片文件");
+        return;
+      }
+      const pid = (me?.peer_id || "").trim();
+      if (!pid) {
+        alert("未获取到 peer_id");
+        return;
+      }
+      setActionBusy("meAvatar");
+      try {
+        const form = new FormData();
+        form.append("avatar", file, file.name || "avatar.jpg");
+        const updated = await postMultipart<any>("/api/v1/chat/profile/avatar", form);
+        const nextMe = normalizeChatMe(updated, me?.peer_id);
+        if (nextMe) {
+          setMe(prev => ({ ...(prev || nextMe), ...nextMe }));
+          void syncMeshchatProfileToJoinedServers(
+            nextMe,
+            meshchatSuperGroupEntries.map(e => e.serverBase)
+          ).catch((err: unknown) =>
+            console.warn("MeshChat 服务器资料同步失败:", err)
+          );
+        } else {
+          alert("头像已上传，但响应格式异常，请刷新页面");
+        }
+      } catch (err: any) {
+        alert("更换头像失败：" + (err?.message || String(err)));
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [me?.peer_id, meshchatSuperGroupEntries]
+  );
+
   const handleSaveMyProfile = async () => {
     try {
       const nick = meNicknameDraft.trim();
@@ -2855,9 +2954,31 @@ const App: React.FC = () => {
         setMe(prev => ({ ...(prev || nextMe), ...nextMe }));
         setMeNicknameDraft(nextMe.nickname ?? meNicknameDraft.trim());
         setMeBioDraft(nextMe.bio ?? meBioDraft.trim());
+        void syncMeshchatProfileToJoinedServers(
+          nextMe,
+          meshchatSuperGroupEntries.map(e => e.serverBase)
+        ).catch((err: unknown) =>
+          console.warn("MeshChat 服务器资料同步失败:", err)
+        );
       } else {
         setMeNicknameDraft(meNicknameDraft.trim());
         setMeBioDraft(meBioDraft.trim());
+        const pid = (me?.peer_id || "").trim();
+        if (pid) {
+          void syncMeshchatProfileToJoinedServers(
+            {
+              peer_id: pid,
+              nickname: nick,
+              remote_nickname: nick,
+              bio: meBioDraft.trim(),
+              avatar: me?.avatar,
+              avatar_cid: me?.avatar_cid
+            },
+            meshchatSuperGroupEntries.map(e => e.serverBase)
+          ).catch((err: unknown) =>
+            console.warn("MeshChat 服务器资料同步失败:", err)
+          );
+        }
       }
       alert("已更新我的名片");
     } catch (err: any) {
@@ -3030,6 +3151,8 @@ const App: React.FC = () => {
             setMeBioDraft={setMeBioDraft}
             resolveAvatarSrc={resolveAvatarSrc}
             onSaveProfile={handleSaveMyProfile}
+            onAvatarFile={handleMyAvatarFile}
+            avatarBusy={actionBusy === "meAvatar"}
           />
         )}
       </div>
@@ -3269,6 +3392,7 @@ const App: React.FC = () => {
         actionBusy={actionBusy}
         onSave={handleSaveMeshchatGroupProfile}
         onInvite={handleInviteMeshchatMembers}
+        onLeave={handleLeaveMeshchatSuperGroup}
         resolveAvatarSrc={resolveAvatarSrc}
       />
 

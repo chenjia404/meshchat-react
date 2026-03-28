@@ -18,6 +18,18 @@ export async function post<T = any>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+/** multipart/form-data（不设 Content-Type，由浏览器带 boundary） */
+export async function postMultipart<T = any>(path: string, form: FormData): Promise<T> {
+  const r = await fetch(api(path), {
+    method: "POST",
+    body: form,
+    credentials: "include"
+  });
+  const data = (await r.json().catch(() => ({}))) as any;
+  if (!r.ok) throw new Error(data.error || data.message || r.statusText);
+  return data as T;
+}
+
 export async function patch<T = any>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(api(path), {
     method: "PATCH",

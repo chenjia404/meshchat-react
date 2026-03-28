@@ -1,5 +1,5 @@
-﻿import { api } from "../api/config";
-import type { MeshchatGroupSummary, MeshchatMessage } from "../types";
+import { api } from "../api/config";
+import type { Me, MeshchatGroupSummary, MeshchatMessage } from "../types";
 
 export function normalizeMeshchatServerBase(input: string): string {
   const s = input.trim().replace(/\/+$/, "");
@@ -195,6 +195,17 @@ export async function joinMeshchatGroup(
   token: string
 ): Promise<unknown> {
   return meshchatRequestWithToken(serverBase, `/groups/${encodeURIComponent(groupId)}/join`, token, { method: "POST" });
+}
+
+/** POST /groups/{group_id}/leave — 群主须先转让群主 */
+export async function leaveMeshchatGroup(
+  serverBase: string,
+  groupId: string,
+  token: string
+): Promise<unknown> {
+  return meshchatRequestWithToken(serverBase, `/groups/${encodeURIComponent(groupId)}/leave`, token, {
+    method: "POST"
+  });
 }
 
 export async function getMeshchatGroup(
@@ -437,3 +448,86 @@ export async function retractMeshchatMessage(
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
   );
 }
+
+/** MeshChat：PATCH /users/{peer_id}/profile 请求体（peer_id 须与当前登录用户一致） */
+export interface MeshchatPatchProfileBody {
+  display_name?: string;
+  avatar_cid?: string;
+  bio?: string;
+  status?: string;
+}
+
+/**
+ * 从头像字段解析 IPFS CID：支持裸 CID、`ipfs://`、`…/ipfs/{cid}` 网关 URL 等。
+ */
+export function extractMeshchatAvatarCid(raw: string | undefined): string | undefined {
+  const s = (raw ?? "").trim();
+  if (!s) return undefined;
+  const ipfsProto = s.match(/^ipfs:\/\/([^/?#]+)/i);
+  if (ipfsProto?.[1]) return ipfsProto[1].trim();
+  const ipfsPath = s.match(/\/ipfs\/([^/?#]+)/i);
+  if (ipfsPath?.[1]) return ipfsPath[1].trim();
+  const bare = s;
+  if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(bare)) return bare;
+  if (/^baf[a-z2-7]{50,}$/i.test(bare)) return bare.toLowerCase();
+  if (/^baf[a-zA-Z0-9]{50,}$/.test(bare)) return bare;
+  return undefined;
+}
+
+/** 将本地 Me 映射为超级群服务器资料 PATCH 体 */
+export function meToMeshchatProfilePatch(me: Me): MeshchatPatchProfileBody {
+  const display_name = (me.nickname || me.remote_nickname || "").trim();
+  const bio = (me.bio || "").trim();
+  const patch: MeshchatPatchProfileBody = { status: "active" };
+  if (display_name) patch.display_name = display_name;
+  if (bio) patch.bio = bio;
+  const cidRaw = (me.avatar_cid || "").trim() || extractMeshchatAvatarCid(me.avatar);
+  if (cidRaw) patch.avatar_cid = cidRaw;
+  return patch;
+}
+
+/**
+ * PATCH /users/{peer_id}/profile — 按 peer_id 更新当前登录用户资料，path 中的 peer_id 必须与 token 对应用户一致。
+ */
+export async function patchMeshchatUserProfile(
+  serverBase: string,
+  token: string,
+  peerId: string,
+  patch: MeshchatPatchProfileBody
+): Promise<unknown> {
+  const pid = peerId.trim();
+  if (!pid) throw new Error("缺少 peer_id");
+  return meshchatRequestWithToken(
+    serverBase,
+    `/users/${encodeURIComponent(pid)}/profile`,
+    token,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch)
+    }
+  );
+}
+
+/**
+ * 向已加入超级群所在服务器同步个人资料（PATCH /users/{peer_id}/profile）。
+ * serverBases 为各超级群 HTTP origin。
+ */
+export async function syncMeshchatProfileToJoinedServers(
+  me: Me | null | undefined,
+  serverBases: string[]
+): Promise<void> {
+  const peerId = (me?.peer_id || "").trim();
+  if (!peerId || !me) return;
+  const patch = meToMeshchatProfilePatch(me);
+  const uniq = [...new Set(serverBases.map(s => s.trim()).filter(Boolean))];
+  for (const serverBase of uniq) {
+    let token = getStoredMeshchatToken(serverBase);
+    if (!token) {
+      const login = await loginMeshchatServer(serverBase, peerId);
+      token = login.token;
+    }
+    await patchMeshchatUserProfile(serverBase, token, peerId, patch);
+  }
+}
+

@@ -5,6 +5,8 @@ export interface Me {
   remote_nickname?: string;
   chat_kex_pub?: string;
   avatar?: string;
+  /** IPFS CID（若后端单独返回，与 avatar URL 二选一或并存） */
+  avatar_cid?: string;
   bio?: string;
 }
 

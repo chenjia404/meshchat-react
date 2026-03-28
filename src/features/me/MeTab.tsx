@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useId } from "react";
 import type { Me } from "../../types";
 import { FallbackAvatar } from "../../components/FallbackAvatar";
 import { avatarUrl } from "../../api";
@@ -11,6 +11,9 @@ export interface MeTabProps {
   setMeBioDraft: (v: string) => void;
   resolveAvatarSrc: (src?: string) => string | undefined;
   onSaveProfile: () => void;
+  /** 选择图片后上传并写入资料（由上层调 IPFS + /chat/profile） */
+  onAvatarFile: (file: File) => void | Promise<void>;
+  avatarBusy?: boolean;
 }
 
 export function MeTab({
@@ -20,16 +23,62 @@ export function MeTab({
   meBioDraft,
   setMeBioDraft,
   resolveAvatarSrc,
-  onSaveProfile
+  onSaveProfile,
+  onAvatarFile,
+  avatarBusy = false
 }: MeTabProps) {
+  const avatarInputId = useId();
+
   return (
     <div style={{ padding: "20px 24px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <FallbackAvatar
-          name={meNicknameDraft || "我"}
-          size="lg"
-          src={resolveAvatarSrc(avatarUrl(me?.avatar))}
+        <input
+          id={avatarInputId}
+          type="file"
+          accept="image/*"
+          style={{ position: "absolute", width: 0, height: 0, opacity: 0, pointerEvents: "none" }}
+          disabled={avatarBusy}
+          onChange={e => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) void Promise.resolve(onAvatarFile(f));
+          }}
         />
+        <label
+          htmlFor={avatarInputId}
+          title="点击更换头像"
+          style={{
+            position: "relative",
+            display: "inline-flex",
+            cursor: avatarBusy ? "wait" : "pointer",
+            borderRadius: "50%",
+            outline: "none",
+            opacity: avatarBusy ? 0.75 : 1
+          }}
+        >
+          <FallbackAvatar
+            name={meNicknameDraft || "我"}
+            size="lg"
+            src={resolveAvatarSrc(avatarUrl(me?.avatar))}
+          />
+          <span
+            style={{
+              position: "absolute",
+              right: -2,
+              bottom: -2,
+              fontSize: 11,
+              fontWeight: 700,
+              padding: "2px 6px",
+              borderRadius: 8,
+              background: "rgba(88,166,255,0.95)",
+              color: "#08111c",
+              pointerEvents: "none",
+              boxShadow: "0 1px 4px rgba(0,0,0,0.35)"
+            }}
+          >
+            {avatarBusy ? "…" : "换"}
+          </span>
+        </label>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 18, fontWeight: 600 }}>我的名片</div>
           <div

@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import { Modal } from "../../components/Modal";
 import { FallbackAvatar } from "../../components/FallbackAvatar";
 import {
@@ -31,6 +31,8 @@ export interface MeshchatSuperGroupProfileModalProps {
   actionBusy: string | null;
   onSave: () => void;
   onInvite: () => void;
+  /** 退出当前超级群（本机先移除，再异步请求服务端） */
+  onLeave: () => void;
   resolveAvatarSrc: (src?: string) => string | undefined;
 }
 
@@ -57,6 +59,7 @@ export function MeshchatSuperGroupProfileModal(props: MeshchatSuperGroupProfileM
     actionBusy,
     onSave,
     onInvite,
+    onLeave,
     resolveAvatarSrc
   } = props;
   const inviteLink = formatMeshchatGroupInviteLink(serverBase, groupId);
@@ -396,6 +399,38 @@ export function MeshchatSuperGroupProfileModal(props: MeshchatSuperGroupProfileM
           </div>
         </>
       ) : null}
+
+      <div
+        style={{
+          marginTop: 20,
+          paddingTop: 16,
+          borderTop: "1px solid rgba(248,113,113,0.25)"
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: "#fca5a5" }}>
+          退出群聊
+        </div>
+        <div style={{ fontSize: 12, opacity: 0.72, marginBottom: 12, lineHeight: 1.5 }}>
+          点击后将立刻从本机移除该会话；随后再尝试通知服务器。若服务器无响应，本机仍会删除会话。再次加入需使用群链接。群主须先在服务端转让群主。
+        </div>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={onLeave}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid rgba(248,113,113,0.45)",
+            background: "rgba(248,113,113,0.12)",
+            color: "#fecaca",
+            fontWeight: 800,
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.65 : 1
+          }}
+        >
+          退出超级群
+        </button>
+      </div>
     </div>
   );
 

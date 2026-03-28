@@ -59,6 +59,10 @@ export function normalizeChatMe(data: any, fallbackPeerId?: string): Me | null {
     pickTrimmedString(src, ["avatar", "avatar_url", "avatarUrl"]) ||
     pickTrimmedString(root, ["avatar", "avatar_url", "avatarUrl"]);
 
+  const avatar_cid =
+    pickTrimmedString(src, ["avatar_cid", "avatarCid"]) ||
+    pickTrimmedString(root, ["avatar_cid", "avatarCid"]);
+
   const bio =
     pickTrimmedString(src, ["bio", "intro", "description"]) ||
     pickTrimmedString(root, ["bio", "intro", "description"]);
@@ -70,6 +74,7 @@ export function normalizeChatMe(data: any, fallbackPeerId?: string): Me | null {
   }
   if (chat_kex_pub) me.chat_kex_pub = chat_kex_pub;
   if (avatar) me.avatar = avatar;
+  if (avatar_cid) me.avatar_cid = avatar_cid;
   if (bio) me.bio = bio;
   return me;
 }

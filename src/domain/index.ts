@@ -26,6 +26,7 @@ export {
   loadMeshchatSuperGroupEntries,
   saveMeshchatSuperGroupEntries,
   upsertMeshchatSuperGroupEntry,
+  removeMeshchatSuperGroupEntry,
   makeMeshchatThreadId,
   parseMeshchatThreadId
 } from "./meshchatSuperGroupStorage";
