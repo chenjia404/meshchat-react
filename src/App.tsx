@@ -921,7 +921,8 @@ const App: React.FC = () => {
   }, [selectedContactId, selectedContact?.remark]);
 
   const handleSendMessage = async (text: string) => {
-    if (!text.trim() || !selectedThreadId) return;
+    const body = text.replace(/\r\n/g, "\n");
+    if (!body.trim() || !selectedThreadId) return;
     setSending(true);
     try {
       if (selectedThreadKind === "meshserver_group") {
@@ -938,7 +939,7 @@ const App: React.FC = () => {
           {
             client_msg_id: `local-${Date.now()}`,
             message_type: "text",
-            text
+            text: body
           }
         );
         await loadThreadMessages("meshserver_group", selectedThreadId);
@@ -951,12 +952,12 @@ const App: React.FC = () => {
         const tid = selectedThreadId;
         await post(`/api/v1/public-channels/${encodeURIComponent(tid)}/messages`, {
           message_type: "text",
-          text: text.trim(),
+          text: body.trim(),
           files: []
         });
         await loadThreadMessages("public_channel", tid);
         markThreadAsRead("public_channel", tid);
-        const p = text.trim().replace(/\s+/g, " ");
+        const p = body.trim().replace(/\s+/g, " ");
         const short =
           p.length > 36 ? p.slice(0, 36) + "…" : p;
         setPublicChannelEntries(prev =>
@@ -972,7 +973,7 @@ const App: React.FC = () => {
         );
       } else if (selectedThreadKind === "group") {
         await post(`/api/v1/groups/${encodeURIComponent(selectedThreadId)}/messages`, {
-          text
+          text: body
         });
         const [list, grps] = await Promise.all([
           get<GroupMessage[]>(
@@ -985,7 +986,7 @@ const App: React.FC = () => {
           withOptimisticGroupPreview(
             Array.isArray(grps) ? grps : [],
             selectedThreadId,
-            text
+            body
           )
         );
         markThreadAsRead("group", selectedThreadId);
@@ -1013,7 +1014,7 @@ const App: React.FC = () => {
           `/api/v1/chat/conversations/${encodeURIComponent(
             targetConversationId
           )}/messages`,
-          { text }
+          { text: body }
         );
         const [list, convs] = await Promise.all([
           get<DirectMessage[]>(
@@ -1028,7 +1029,7 @@ const App: React.FC = () => {
           withOptimisticConversationPreview(
             Array.isArray(convs) ? convs : [],
             targetConversationId,
-            text
+            body
           )
         );
         markThreadAsRead("direct", targetConversationId);
@@ -1043,7 +1044,7 @@ const App: React.FC = () => {
 
   const forwardTextToThreadOnce = useCallback(
     async (targetKind: ThreadKind, targetThreadId: string, text: string) => {
-      const body = text.trim();
+      const body = text.replace(/\r\n/g, "\n").trim();
       if (!body) return;
       if (targetKind === "meshserver_group") {
         const thread = meshGroups.find(t => t.threadId === targetThreadId) || null;
@@ -1304,7 +1305,7 @@ const App: React.FC = () => {
       setForwardBusy(true);
       try {
         if (draft.kind === "text") {
-          const body = draft.text.trim();
+          const body = draft.text.replace(/\r\n/g, "\n").trim();
           if (!body) return;
           let ok = 0;
           const failures: string[] = [];

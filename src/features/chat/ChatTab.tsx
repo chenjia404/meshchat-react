@@ -54,6 +54,18 @@ function normalizeMessageMultilineText(text: string | undefined): string {
   return normalized.replace(/\\n/g, "\n");
 }
 
+/**
+ * MessageInput onSend 参数为 (innerHtml, textContent, innerText, nodes)。
+ * contenteditable 下 textContent 可能丢失块级换行，发送正文应优先用 innerText。
+ */
+function plainTextFromMessageInput(
+  _innerHtml: string,
+  textContent: string,
+  innerText: string
+): string {
+  return (innerText || textContent || "").replace(/\r\n/g, "\n");
+}
+
 function FileMessageContent(props: {
   downloadUrl: string;
   fileName?: string;
@@ -1657,7 +1669,9 @@ export function ChatTab(props: ChatTabProps) {
                         <MessageInput
                           placeholder="输入讯息…（Shift+Enter 换行，可拖入图片）"
                           attachButton={false}
-                          onSend={(_h, textContent) => void handleSendMessage(textContent)}
+                          onSend={(html, tc, it) =>
+                            void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                          }
                         />
                       </div>
                       <input
@@ -1709,8 +1723,8 @@ export function ChatTab(props: ChatTabProps) {
                           <MessageInput
                             placeholder="文字，或拖拽/粘贴/选择图片、视频、音频与文件…"
                             attachButton={false}
-                            onSend={(_h, textContent) =>
-                              void handleSendMessage(textContent)
+                            onSend={(html, tc, it) =>
+                              void handleSendMessage(plainTextFromMessageInput(html, tc, it))
                             }
                           />
                         </div>
@@ -1765,7 +1779,9 @@ export function ChatTab(props: ChatTabProps) {
                     <MessageInput
                       placeholder="输入讯息…（Shift+Enter 换行，可拖入或粘贴文件）"
                       attachButton={false}
-                      onSend={(_h, textContent) => void handleSendMessage(textContent)}
+                      onSend={(html, tc, it) =>
+                        void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                      }
                     />
                   )}
                 </div>
