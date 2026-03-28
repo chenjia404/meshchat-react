@@ -80,7 +80,16 @@ export function ContactsTab({
 
         const ContactList = (
           <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "12px 16px", fontWeight: 700 }}>联系人</div>
+            <div
+              style={{
+                padding: "12px 16px",
+                display: "flex",
+                alignItems: "center",
+                gap: 10
+              }}
+            >
+              <span style={{ fontWeight: 700 }}>联系人</span>
+            </div>
             <div style={{ flex: 1, overflowY: "auto" }}>
               <div style={{ padding: "12px 16px 8px", fontWeight: 700 }}>好友添加请求</div>
               {pendingRequests.length === 0 ? (

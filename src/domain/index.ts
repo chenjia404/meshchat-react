@@ -21,3 +21,11 @@ export {
   retentionDirectConversationPath,
   retentionGroupPath
 } from "./retention";
+
+export {
+  loadMeshchatSuperGroupEntries,
+  saveMeshchatSuperGroupEntries,
+  upsertMeshchatSuperGroupEntry,
+  makeMeshchatThreadId,
+  parseMeshchatThreadId
+} from "./meshchatSuperGroupStorage";

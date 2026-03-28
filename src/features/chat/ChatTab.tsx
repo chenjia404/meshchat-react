@@ -14,8 +14,10 @@ import type {
   MeshserverSyncMessage,
   DirectMessage,
   GroupMessage,
-  PublicChannelMessage
+  PublicChannelMessage,
+  MeshchatMessage
 } from "../../types";
+import { MeshchatSuperGroupMessages } from "./MeshchatSuperGroupMessages";
 import { FallbackAvatar, textAvatarLetter } from "../../components/FallbackAvatar";
 import { ImageLightbox } from "../../components/ImageLightbox";
 import { createListRowMenuHandlers } from "../../hooks/createListRowMenuHandlers";
@@ -223,6 +225,9 @@ export interface ChatThreadListItem {
   /** 去中心化公开频道 owner */
   publicChannelOwnerPeerId?: string;
   isPublicChannelOwner?: boolean;
+  /** MeshChat 超级群 */
+  meshchatServerBase?: string;
+  meshchatGroupId?: string;
 }
 
 export interface ChatTabProps {
@@ -251,6 +256,7 @@ export interface ChatTabProps {
   setContactsMobileView: (v: "list" | "detail") => void;
   setActiveTab: (tab: "chat" | "contacts" | "me") => void;
   openGroupProfile: (groupId: string) => void;
+  openMeshchatSuperGroupProfile: () => void;
   openPublicChannelProfile: (channelId: string) => void;
   peerStatusMap: Map<string, any>;
   openRetentionModal: () => void;
@@ -260,7 +266,7 @@ export interface ChatTabProps {
   openGroupRetentionModal: () => void;
   fileSending: null | { text: string; error?: boolean };
   messagesLoading: boolean;
-  messages: Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>;
+  messages: Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage | MeshchatMessage>;
   meshGroups: MeshserverGroupThread[];
   me: Me | null;
   contactsRaw: ContactRaw[];
@@ -290,6 +296,8 @@ export interface ChatTabProps {
   joinGroup: (groupId: string) => void;
   /** 標記會話已讀（清除側欄未讀角標） */
   markThreadAsRead: (kind: ThreadKind, threadId: string) => void;
+  /** MeshChat 超级群：当前用户在该服务器上的 user id */
+  meshchatMyUserId?: number;
   /** 從聯絡人等入口開啟聊天時寫入未讀條數，供初次捲動定位 */
   pendingScrollUnreadRef: React.MutableRefObject<number | null>;
 }
@@ -315,6 +323,7 @@ export function ChatTab(props: ChatTabProps) {
     setContactsMobileView,
     setActiveTab,
     openGroupProfile,
+    openMeshchatSuperGroupProfile,
     openPublicChannelProfile,
     peerStatusMap,
     openRetentionModal,
@@ -336,6 +345,7 @@ export function ChatTab(props: ChatTabProps) {
     openGroupThread,
     joinGroup,
     markThreadAsRead,
+    meshchatMyUserId,
     pendingScrollUnreadRef
   } = props;
 
@@ -701,6 +711,10 @@ export function ChatTab(props: ChatTabProps) {
                           openGroupProfile(selectedThread.id);
                           return;
                         }
+                        if (selectedThread.kind === "meshchat_super_group") {
+                          openMeshchatSuperGroupProfile();
+                          return;
+                        }
                         if (selectedThread.kind === "public_channel") {
                           openPublicChannelProfile(selectedThread.id);
                         }
@@ -745,9 +759,11 @@ export function ChatTab(props: ChatTabProps) {
                             ? selectedThread.isPublicChannelOwner
                               ? "公开频道 · 可发布"
                               : "公开频道 · 只读"
-                            : selectedThread.kind === "group"
-                              ? `群聊 · ${selectedThread.subtitle || ""}`
-                              : selectedThread.subtitle || ""}
+                            : selectedThread.kind === "meshchat_super_group"
+                              ? "超级群聊"
+                              : selectedThread.kind === "group"
+                                ? `群聊 · ${selectedThread.subtitle || ""}`
+                                : selectedThread.subtitle || ""}
                         </div>
                       </div>
                     </div>
@@ -1397,6 +1413,14 @@ export function ChatTab(props: ChatTabProps) {
                       </div>
                     );
                   })
+                ) : selectedThreadKind === "meshchat_super_group" ? (
+                  <MeshchatSuperGroupMessages
+                    messages={messages as MeshchatMessage[]}
+                    myUserId={meshchatMyUserId}
+                    selectedThreadId={selectedThreadId || ""}
+                    createLongPressHandlers={createLongPressHandlers}
+                    setImagePreview={setImagePreview}
+                  />
                 ) : (
                   (messages as DirectMessage[]).map((m, idx) => {
                     const fromMe = m.direction === "outbound";
@@ -1707,6 +1731,59 @@ export function ChatTab(props: ChatTabProps) {
                         }}
                       >
                         上传图片
+                      </button>
+                    </div>
+                  ) : selectedThreadKind === "meshchat_super_group" ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-end",
+                        gap: 10,
+                        padding: 8
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <MessageInput
+                          placeholder="输入讯息…（Shift+Enter 换行，可拖入或粘贴文件）"
+                          attachButton={false}
+                          onSend={(html, tc, it) =>
+                            void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                          }
+                        />
+                      </div>
+                      <input
+                        id="meshchat-file-input"
+                        type="file"
+                        multiple
+                        style={{ display: "none" }}
+                        onChange={e => {
+                          const fs = e.target.files;
+                          if (!fs?.length) return;
+                          for (const f of Array.from(fs)) void sendFileForCurrentThread(f);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const el = document.getElementById(
+                            "meshchat-file-input"
+                          ) as HTMLInputElement | null;
+                          el?.click();
+                        }}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,255,255,0.14)",
+                          background: "transparent",
+                          color: "#e5e7eb",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                          marginBottom: 2,
+                          flexShrink: 0
+                        }}
+                      >
+                        附件
                       </button>
                     </div>
                   ) : selectedThreadKind === "public_channel" ? (

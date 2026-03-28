@@ -7,25 +7,35 @@ import type {
   MeshserverGroupThread,
   MeshserverSyncMessage,
   PublicChannelMessage,
-  ThreadKind
+  MeshchatMessage,
+  MeshchatSuperGroupListEntry,
+  ThreadKind,
+  Me
 } from "../types";
 import {
   mergeMeshSyncMessages,
   normalizeList,
   normalizePublicChannelMessages
 } from "../utils";
+import {
+  getMeshchatMessages,
+  getStoredMeshchatToken,
+  loginMeshchatServer
+} from "../utils/meshchatApi";
 
 export interface UseThreadMessagesLoaderParams {
   meshGroups: MeshserverGroupThread[];
+  meshchatSuperGroupEntries: MeshchatSuperGroupListEntry[];
+  me: Me | null;
   selectedThreadId: string | null;
   selectedThreadKind: ThreadKind;
   activeTab: "chat" | "contacts" | "me";
   messagesRef: React.MutableRefObject<
-    Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>
+    Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage | MeshchatMessage>
   >;
   setMessages: React.Dispatch<
     React.SetStateAction<
-      Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>
+      Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage | MeshchatMessage>
     >
   >;
   setMessagesLoading: React.Dispatch<React.SetStateAction<boolean>>;
@@ -42,6 +52,8 @@ const POLL_MS = 4000;
  */
 export function useThreadMessagesLoader({
   meshGroups,
+  meshchatSuperGroupEntries,
+  me,
   selectedThreadId,
   selectedThreadKind,
   activeTab,
@@ -107,6 +119,28 @@ export function useThreadMessagesLoader({
           } else {
             setMessages(incoming);
           }
+        } else if (kind === "meshchat_super_group") {
+          if (!silent) setSelectedGroupDetails(null);
+          const entry = meshchatSuperGroupEntries.find(e => e.threadId === id) || null;
+          const peerId = (me?.peer_id || "").trim();
+          if (!entry || !peerId) {
+            setMessages([]);
+            return;
+          }
+          let token = getStoredMeshchatToken(entry.serverBase);
+          if (!token) {
+            try {
+              const login = await loginMeshchatServer(entry.serverBase, peerId);
+              token = login.token;
+            } catch {
+              setMessages([]);
+              return;
+            }
+          }
+          const list = await getMeshchatMessages(entry.serverBase, entry.groupId, token, {
+            limit: 100
+          }).catch(() => []);
+          setMessages(list);
         } else if (kind === "public_channel") {
           if (!silent) setSelectedGroupDetails(null);
           const needSync =
@@ -143,7 +177,7 @@ export function useThreadMessagesLoader({
         if (!silent) setMessagesLoading(false);
       }
     },
-    [meshGroups, setMessages, setMessagesLoading, setSelectedGroupDetails]
+    [meshGroups, meshchatSuperGroupEntries, me, setMessages, setMessagesLoading, setSelectedGroupDetails]
   );
 
   useEffect(() => {

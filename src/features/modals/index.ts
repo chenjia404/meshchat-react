@@ -13,3 +13,13 @@ export {
   PublicChannelProfileModal,
   type PublicChannelProfileModalProps
 } from "./PublicChannelProfileModal";
+
+export {
+  JoinMeshchatSuperGroupModal,
+  type JoinMeshchatSuperGroupModalProps
+} from "./JoinMeshchatSuperGroupModal";
+
+export {
+  MeshchatSuperGroupProfileModal,
+  type MeshchatSuperGroupProfileModalProps
+} from "./MeshchatSuperGroupProfileModal";

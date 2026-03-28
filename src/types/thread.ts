@@ -1,5 +1,6 @@
-export type ThreadKind =
+﻿export type ThreadKind =
   | "direct"
   | "group"
   | "meshserver_group"
-  | "public_channel";
+  | "public_channel"
+  | "meshchat_super_group";

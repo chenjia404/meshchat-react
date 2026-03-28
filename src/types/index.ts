@@ -1,4 +1,4 @@
-export type { ThreadKind } from "./thread";
+﻿export type { ThreadKind } from "./thread";
 export type {
   Me,
   ContactRaw,
@@ -16,6 +16,13 @@ export type {
   MeshserverGroupThread,
   MeshserverSyncMessage
 } from "./mesh";
+export type {
+  MeshchatMessage,
+  MeshchatUserRef,
+  MeshchatGroupSummary,
+  MeshchatSuperGroupListEntry,
+  MeshchatSuperGroupThread
+} from "./meshchat";
 export type { WsChatEvent } from "./ws";
 export type { ContactViewRow } from "./contactView";
 export type {

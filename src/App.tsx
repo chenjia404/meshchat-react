@@ -19,7 +19,10 @@ import type {
   WsChatEvent,
   PublicChannelListEntry,
   PublicChannelMessage,
-  PublicChannelProfileDetail
+  PublicChannelProfileDetail,
+  MeshchatMessage,
+  MeshchatSuperGroupListEntry,
+  MeshchatGroupSummary
 } from "./types";
 import {
   api,
@@ -43,6 +46,7 @@ import {
   normalizeChatMe,
   isImageMime,
   isVideoMime,
+  isAudioMime,
   resolveMeshserverAssetUrl,
   withOptimisticConversationPreview,
   withOptimisticGroupPreview,
@@ -66,6 +70,23 @@ import {
   mergePublicChannelPreviewFromPrevious,
   postPublicChannelFileMessage
 } from "./utils";
+import {
+  loginMeshchatServer,
+  joinMeshchatGroup,
+  getMeshchatGroup,
+  getMeshchatMessages,
+  postMeshchatTextMessage,
+  postMeshchatMessageRaw,
+  postMeshchatFileRecord,
+  ipfsAddViaMeshproxy,
+  peekMeshchatMessagePreview,
+  parseMeshchatGroupInviteUrl,
+  getStoredMeshchatToken,
+  retractMeshchatMessage,
+  patchMeshchatGroup,
+  invitePeerToMeshchatGroup
+} from "./utils/meshchatApi";
+
 import { createListRowMenuHandlers } from "./hooks/createListRowMenuHandlers";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useAvatarUrlGate } from "./hooks/useAvatarUrlGate";
@@ -82,7 +103,11 @@ import {
   RETENTION_INVALID_ALERT_ZH,
   isValidRetentionMinutesTotal,
   retentionDirectConversationPath,
-  retentionGroupPath
+  retentionGroupPath,
+  loadMeshchatSuperGroupEntries,
+  saveMeshchatSuperGroupEntries,
+  upsertMeshchatSuperGroupEntry,
+  makeMeshchatThreadId
 } from "./domain";
 import { FallbackAvatar, textAvatarLetter } from "./components/FallbackAvatar";
 import { BottomTabItem } from "./components/BottomTabItem";
@@ -110,6 +135,8 @@ import {
   CreatePublicChannelModal,
   SubscribePublicChannelModal,
   PublicChannelProfileModal,
+  JoinMeshchatSuperGroupModal,
+  MeshchatSuperGroupProfileModal,
   type RetentionUnit
 } from "./features/modals";
 
@@ -127,10 +154,23 @@ const App: React.FC = () => {
   const [publicChannelEntries, setPublicChannelEntries] = useState<PublicChannelListEntry[]>(
     () => loadPublicChannelEntries()
   );
+  const [meshchatSuperGroupEntries, setMeshchatSuperGroupEntries] = useState<
+    MeshchatSuperGroupListEntry[]
+  >(() => loadMeshchatSuperGroupEntries());
+  const [joinMeshchatOpen, setJoinMeshchatOpen] = useState(false);
+  const [joinMeshchatUrlDraft, setJoinMeshchatUrlDraft] = useState("");
+  const [meshchatProfileOpen, setMeshchatProfileOpen] = useState(false);
+  const [meshchatProfileLoading, setMeshchatProfileLoading] = useState(false);
+  const [meshchatProfileError, setMeshchatProfileError] = useState<string | null>(null);
+  const [meshchatProfileGroup, setMeshchatProfileGroup] = useState<MeshchatGroupSummary | null>(null);
+  const [meshchatProfileTitleDraft, setMeshchatProfileTitleDraft] = useState("");
+  const [meshchatProfileAboutDraft, setMeshchatProfileAboutDraft] = useState("");
+  const [meshchatInviteQuery, setMeshchatInviteQuery] = useState("");
+  const [meshchatInviteIds, setMeshchatInviteIds] = useState<Set<string>>(() => new Set());
   const [requestsRaw, setRequestsRaw] = useState<FriendRequestRaw[]>([]);
 
   const [messages, setMessages] = useState<
-    Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage>
+    Array<DirectMessage | GroupMessage | MeshserverSyncMessage | PublicChannelMessage | MeshchatMessage>
   >([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -156,16 +196,29 @@ const App: React.FC = () => {
         conversations,
         groups,
         meshGroups,
+        meshchatSuperGroupEntries,
         publicChannelEntries,
         contactsRaw,
         contactAvatarMap
       ),
-    [conversations, groups, meshGroups, publicChannelEntries, contactsRaw, contactAvatarMap]
+    [
+      conversations,
+      groups,
+      meshGroups,
+      meshchatSuperGroupEntries,
+      publicChannelEntries,
+      contactsRaw,
+      contactAvatarMap
+    ]
   );
 
   React.useEffect(() => {
     savePublicChannelEntries(publicChannelEntries);
   }, [publicChannelEntries]);
+
+  React.useEffect(() => {
+    saveMeshchatSuperGroupEntries(meshchatSuperGroupEntries);
+  }, [meshchatSuperGroupEntries]);
 
   /** 各會話未讀條數（key: `${kind}:${id}`） */
   const [threadUnreadCounts, setThreadUnreadCounts] = useState<Record<string, number>>(
@@ -381,8 +434,16 @@ const App: React.FC = () => {
     return groups.find(g => g.group_id === selectedThreadId) || null;
   }, [selectedThreadKind, selectedThreadId, groups]);
 
+  const selectedMeshchatMyUserId = useMemo(() => {
+    if (selectedThreadKind !== "meshchat_super_group" || !selectedThreadId) return undefined;
+    const e = meshchatSuperGroupEntries.find(x => x.threadId === selectedThreadId);
+    return e?.myUserId;
+  }, [selectedThreadKind, selectedThreadId, meshchatSuperGroupEntries]);
+
   const { loadThreadMessages } = useThreadMessagesLoader({
     meshGroups,
+    meshchatSuperGroupEntries,
+    me,
     selectedThreadId,
     selectedThreadKind,
     activeTab,
@@ -944,6 +1005,31 @@ const App: React.FC = () => {
         );
         await loadThreadMessages("meshserver_group", selectedThreadId);
         markThreadAsRead("meshserver_group", selectedThreadId);
+      } else if (selectedThreadKind === "meshchat_super_group") {
+        const entry =
+          meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId) || null;
+        const pid = (me?.peer_id || "").trim();
+        if (!entry || !pid) {
+          alert("未找到超级群上下文");
+          return;
+        }
+        let token = getStoredMeshchatToken(entry.serverBase);
+        if (!token) {
+          const login = await loginMeshchatServer(entry.serverBase, pid);
+          token = login.token;
+        }
+        await postMeshchatTextMessage(entry.serverBase, entry.groupId, token, body.trim());
+        await loadThreadMessages("meshchat_super_group", selectedThreadId);
+        markThreadAsRead("meshchat_super_group", selectedThreadId);
+        const short = body.trim().replace(/\s+/g, " ");
+        const preview = short.length > 36 ? short.slice(0, 36) + "…" : short;
+        setMeshchatSuperGroupEntries(prevEntries =>
+          prevEntries.map(e =>
+            e.threadId === selectedThreadId
+              ? { ...e, lastMessagePreview: preview, updatedAtSec: Math.floor(Date.now() / 1000) }
+              : e
+          )
+        );
       } else if (selectedThreadKind === "public_channel") {
         if (!selectedThreadId || !canPostPublicChannel(selectedThreadId)) {
           alert("仅频道创建者可以发布内容");
@@ -1071,6 +1157,25 @@ const App: React.FC = () => {
         markThreadAsRead("meshserver_group", targetThreadId);
         return;
       }
+      if (targetKind === "meshchat_super_group") {
+        const entry = meshchatSuperGroupEntries.find(e => e.threadId === targetThreadId) || null;
+        const pid = (me?.peer_id || "").trim();
+        if (!entry || !pid) throw new Error("未找到超级群上下文");
+        let token = getStoredMeshchatToken(entry.serverBase);
+        if (!token) {
+          const login = await loginMeshchatServer(entry.serverBase, pid);
+          token = login.token;
+        }
+        await postMeshchatTextMessage(entry.serverBase, entry.groupId, token, body);
+        if (
+          selectedThreadKind === "meshchat_super_group" &&
+          selectedThreadId === targetThreadId
+        ) {
+          await loadThreadMessages("meshchat_super_group", targetThreadId);
+        }
+        markThreadAsRead("meshchat_super_group", targetThreadId);
+        return;
+      }
       if (targetKind === "public_channel") {
         if (!canPostPublicChannel(targetThreadId)) {
           throw new Error("仅频道创建者可以发布");
@@ -1159,6 +1264,8 @@ const App: React.FC = () => {
     },
     [
       meshGroups,
+      meshchatSuperGroupEntries,
+      me,
       canPostPublicChannel,
       conversations,
       selectedThreadKind,
@@ -1211,6 +1318,51 @@ const App: React.FC = () => {
           await loadThreadMessages("meshserver_group", targetThreadId);
         }
         markThreadAsRead("meshserver_group", targetThreadId);
+        return;
+      }
+      if (targetKind === "meshchat_super_group") {
+        const entry = meshchatSuperGroupEntries.find(e => e.threadId === targetThreadId) || null;
+        const pid = (me?.peer_id || "").trim();
+        if (!entry || !pid) throw new Error("未找到超级群上下文");
+        let token = getStoredMeshchatToken(entry.serverBase);
+        if (!token) {
+          const login = await loginMeshchatServer(entry.serverBase, pid);
+          token = login.token;
+        }
+        const ipfs = await ipfsAddViaMeshproxy(file);
+        const mime = file.type || "application/octet-stream";
+        const size = ipfs.size || file.size;
+        const name = file.name || "upload.bin";
+        // ??? content_type=file + mime_type??? MeshChat ? video ?? duration ??? invalid video payload
+        let contentType: "image" | "video" | "voice" | "file" = "file";
+        if (isImageMime(mime)) contentType = "image";
+        else if (isAudioMime(mime)) contentType = "voice";
+        await postMeshchatFileRecord(entry.serverBase, token, {
+          cid: ipfs.cid,
+          mime_type: mime,
+          size,
+          file_name: name
+        });
+        const payload: Record<string, unknown> = {
+          cid: ipfs.cid,
+          mime_type: mime,
+          size,
+          file_name: name
+        };
+        await postMeshchatMessageRaw(entry.serverBase, entry.groupId, token, {
+          content_type: contentType,
+          payload,
+          reply_to_message_id: null,
+          forward_from_message_id: null,
+          signature: ""
+        });
+        if (
+          selectedThreadKind === "meshchat_super_group" &&
+          selectedThreadId === targetThreadId
+        ) {
+          await loadThreadMessages("meshchat_super_group", targetThreadId);
+        }
+        markThreadAsRead("meshchat_super_group", targetThreadId);
         return;
       }
       if (targetKind === "group") {
@@ -1287,6 +1439,8 @@ const App: React.FC = () => {
     },
     [
       meshGroups,
+      meshchatSuperGroupEntries,
+      me,
       canPostPublicChannel,
       conversations,
       selectedThreadKind,
@@ -1426,6 +1580,62 @@ const App: React.FC = () => {
         setFileSending(null);
         await loadThreadMessages("meshserver_group", selectedThreadId);
         markThreadAsRead("meshserver_group", selectedThreadId);
+        return;
+      }
+      if (selectedThreadKind === "meshchat_super_group") {
+        const entry = meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId) || null;
+        const pid = (me?.peer_id || "").trim();
+        if (!entry || !pid) {
+          alert("未找到超级群上下文");
+          setFileSending(null);
+          return;
+        }
+        let token = getStoredMeshchatToken(entry.serverBase);
+        if (!token) {
+          const login = await loginMeshchatServer(entry.serverBase, pid);
+          token = login.token;
+        }
+        const ipfs = await ipfsAddViaMeshproxy(file);
+        const mime = file.type || "application/octet-stream";
+        const name = file.name || "upload.bin";
+        // ?????????????? file
+        let contentType: "image" | "video" | "voice" | "file" = "file";
+        if (isImageMime(mime)) contentType = "image";
+        else if (isAudioMime(mime)) contentType = "voice";
+        await postMeshchatFileRecord(entry.serverBase, token, {
+          cid: ipfs.cid,
+          mime_type: mime,
+          size: ipfs.size || file.size,
+          file_name: name
+        });
+        const payload: Record<string, unknown> = {
+          cid: ipfs.cid,
+          mime_type: mime,
+          size: ipfs.size || file.size,
+          file_name: name
+        };
+        await postMeshchatMessageRaw(entry.serverBase, entry.groupId, token, {
+          content_type: contentType,
+          payload,
+          reply_to_message_id: null,
+          forward_from_message_id: null,
+          signature: ""
+        });
+        setFileSending(null);
+        await loadThreadMessages("meshchat_super_group", selectedThreadId);
+        markThreadAsRead("meshchat_super_group", selectedThreadId);
+        const short = name.length > 36 ? name.slice(0, 36) + "…" : name;
+        setMeshchatSuperGroupEntries(prev =>
+          prev.map(e =>
+            e.threadId === selectedThreadId
+              ? {
+                  ...e,
+                  lastMessagePreview: `[文件] ${short}`,
+                  updatedAtSec: Math.floor(Date.now() / 1000)
+                }
+              : e
+          )
+        );
         return;
       }
 
@@ -1841,6 +2051,43 @@ const App: React.FC = () => {
       alert("群聊已建立");
     } catch (err: any) {
       alert("建立群聊失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+
+  const handleJoinMeshchatSuperGroup = async () => {
+    setActionBusy("joinMeshchat");
+    try {
+      const { serverBase, groupId } = parseMeshchatGroupInviteUrl(joinMeshchatUrlDraft);
+      const pid = (me?.peer_id || "").trim();
+      if (!pid) throw new Error("未获取到本机 peer_id，请稍后重试");
+      const { token, userId } = await loginMeshchatServer(serverBase, pid);
+      await joinMeshchatGroup(serverBase, groupId, token);
+      const grp = await getMeshchatGroup(serverBase, groupId, token);
+      const threadId = makeMeshchatThreadId(serverBase, groupId);
+      const title = (grp.title || "").trim() || "超级群聊";
+      setMeshchatSuperGroupEntries(prev =>
+        upsertMeshchatSuperGroupEntry(prev, {
+          serverBase,
+          groupId,
+          threadId,
+          title,
+          avatarCid: typeof grp.avatar_cid === "string" ? grp.avatar_cid : undefined,
+          myUserId: userId,
+          updatedAtSec: Math.floor(Date.now() / 1000)
+        })
+      );
+      setJoinMeshchatOpen(false);
+      setJoinMeshchatUrlDraft("");
+      setActiveTab("chat");
+      setSelectedThreadKind("meshchat_super_group");
+      setSelectedThreadId(threadId);
+      markThreadAsRead("meshchat_super_group", threadId);
+      void loadThreadMessages("meshchat_super_group", threadId);
+    } catch (err: any) {
+      alert("加入失败：" + (err?.message || String(err)));
     } finally {
       setActionBusy(null);
     }
@@ -2341,6 +2588,103 @@ const App: React.FC = () => {
     }
   };
 
+
+  const openMeshchatSuperGroupProfile = useCallback(async () => {
+    if (selectedThreadKind !== "meshchat_super_group" || !selectedThreadId) return;
+    const entry = meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId);
+    if (!entry) return;
+    const pid = (me?.peer_id || "").trim();
+    if (!pid) {
+      alert("未获取到 peer_id");
+      return;
+    }
+    setMeshchatProfileOpen(true);
+    setMeshchatProfileLoading(true);
+    setMeshchatProfileError(null);
+    setMeshchatProfileGroup(null);
+    setMeshchatInviteQuery("");
+    setMeshchatInviteIds(new Set());
+    try {
+      let token = getStoredMeshchatToken(entry.serverBase);
+      if (!token) {
+        const login = await loginMeshchatServer(entry.serverBase, pid);
+        token = login.token;
+      }
+      const grp = await getMeshchatGroup(entry.serverBase, entry.groupId, token);
+      setMeshchatProfileGroup(grp);
+      setMeshchatProfileTitleDraft((grp.title || "").trim() || entry.title);
+      setMeshchatProfileAboutDraft((grp.about || "").trim());
+    } catch (err: any) {
+      setMeshchatProfileError(err?.message || String(err));
+    } finally {
+      setMeshchatProfileLoading(false);
+    }
+  }, [selectedThreadKind, selectedThreadId, meshchatSuperGroupEntries, me?.peer_id]);
+
+  const handleSaveMeshchatGroupProfile = async () => {
+    if (selectedThreadKind !== "meshchat_super_group" || !selectedThreadId) return;
+    const entry = meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId);
+    if (!entry) return;
+    const pid = (me?.peer_id || "").trim();
+    if (!pid) return;
+    setActionBusy("meshchatProfileSave");
+    try {
+      let token = getStoredMeshchatToken(entry.serverBase);
+      if (!token) {
+        const login = await loginMeshchatServer(entry.serverBase, pid);
+        token = login.token;
+      }
+      const updated = await patchMeshchatGroup(entry.serverBase, entry.groupId, token, {
+        title: meshchatProfileTitleDraft.trim(),
+        about: meshchatProfileAboutDraft.trim()
+      });
+      setMeshchatProfileGroup(updated);
+      const nextTitle = (updated.title || "").trim() || entry.title;
+      setMeshchatSuperGroupEntries(prev =>
+        prev.map(e =>
+          e.threadId === entry.threadId
+            ? { ...e, title: nextTitle, updatedAtSec: Math.floor(Date.now() / 1000) }
+            : e
+        )
+      );
+      alert("资料已保存");
+    } catch (err: any) {
+      alert("保存失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleInviteMeshchatMembers = async () => {
+    if (selectedThreadKind !== "meshchat_super_group" || !selectedThreadId) return;
+    const entry = meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId);
+    if (!entry) return;
+    const ids = Array.from(meshchatInviteIds);
+    if (ids.length === 0) {
+      alert("请先从好友中选择要邀请的人");
+      return;
+    }
+    const pid = (me?.peer_id || "").trim();
+    if (!pid) return;
+    setActionBusy("meshchatInvite");
+    try {
+      let token = getStoredMeshchatToken(entry.serverBase);
+      if (!token) {
+        const login = await loginMeshchatServer(entry.serverBase, pid);
+        token = login.token;
+      }
+      for (const peerId of ids) {
+        await invitePeerToMeshchatGroup(entry.serverBase, entry.groupId, token, peerId);
+      }
+      setMeshchatInviteIds(new Set());
+      alert("已发送邀请");
+    } catch (err: any) {
+      alert("邀请失败：" + (err?.message || String(err)));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
   const openGroupProfile = async (groupId: string) => {
     if (!groupId) return;
     try {
@@ -2627,6 +2971,7 @@ const App: React.FC = () => {
             setContactsMobileView={setContactsMobileView}
             setActiveTab={setActiveTab}
             openGroupProfile={openGroupProfile}
+            openMeshchatSuperGroupProfile={openMeshchatSuperGroupProfile}
             openPublicChannelProfile={openPublicChannelProfile}
             peerStatusMap={peerStatusMap}
             openRetentionModal={openRetentionModal}
@@ -2648,6 +2993,7 @@ const App: React.FC = () => {
             openGroupThread={openGroupThread}
             joinGroup={joinGroup}
             markThreadAsRead={markThreadAsRead}
+            meshchatMyUserId={selectedMeshchatMyUserId}
             pendingScrollUnreadRef={pendingScrollUnreadRef}
           />
         )}
@@ -2741,6 +3087,24 @@ const App: React.FC = () => {
             }
             return;
           }
+          if (kind === "meshchat_super_group") {
+            if (!window.confirm("确认撤回这条消息吗？")) return;
+            try {
+              const entry = meshchatSuperGroupEntries.find(e => e.threadId === threadId);
+              const pid = (me?.peer_id || "").trim();
+              if (!entry || !pid) throw new Error("未找到超级群上下文");
+              let token = getStoredMeshchatToken(entry.serverBase);
+              if (!token) {
+                const login = await loginMeshchatServer(entry.serverBase, pid);
+                token = login.token;
+              }
+              await retractMeshchatMessage(entry.serverBase, entry.groupId, token, msgId);
+              await loadThreadMessages("meshchat_super_group", threadId);
+            } catch (err: any) {
+              alert("撤回失败：" + (err?.message || String(err)));
+            }
+            return;
+          }
           if (kind === "group") await revokeGroupMessage(threadId, msgId);
           else await revokeDirectMessage(threadId, msgId);
         }}
@@ -2770,6 +3134,7 @@ const App: React.FC = () => {
         onAddFriend={() => setAddFriendOpen(true)}
         onCreateGroup={() => setCreateGroupOpen(true)}
         onMeshJoin={openMeshJoin}
+        onJoinMeshchatSuperGroup={() => setJoinMeshchatOpen(true)}
         onCreatePublicChannel={() => setCreatePublicChannelOpen(true)}
         onSubscribePublicChannel={() => setSubscribePublicChannelOpen(true)}
       />
@@ -2861,6 +3226,52 @@ const App: React.FC = () => {
         createMeshChannelAndMaybeJoin={createMeshChannelAndMaybeJoin}
         resolveAvatarSrc={resolveAvatarSrc}
       />
+      <JoinMeshchatSuperGroupModal
+        open={joinMeshchatOpen}
+        onClose={() => {
+          setJoinMeshchatOpen(false);
+          setJoinMeshchatUrlDraft("");
+        }}
+        urlDraft={joinMeshchatUrlDraft}
+        onUrlDraftChange={setJoinMeshchatUrlDraft}
+        busy={actionBusy === "joinMeshchat"}
+        onJoin={handleJoinMeshchatSuperGroup}
+      />
+
+      <MeshchatSuperGroupProfileModal
+        open={meshchatProfileOpen}
+        isMobile={isMobile}
+        onClose={() => {
+          setMeshchatProfileOpen(false);
+          setMeshchatProfileError(null);
+          setMeshchatInviteQuery("");
+          setMeshchatInviteIds(new Set());
+        }}
+        loading={meshchatProfileLoading}
+        error={meshchatProfileError}
+        serverBase={
+          meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId)?.serverBase ?? ""
+        }
+        groupId={
+          meshchatSuperGroupEntries.find(e => e.threadId === selectedThreadId)?.groupId ?? ""
+        }
+        group={meshchatProfileGroup}
+        myUserId={selectedMeshchatMyUserId}
+        titleDraft={meshchatProfileTitleDraft}
+        onTitleDraftChange={setMeshchatProfileTitleDraft}
+        aboutDraft={meshchatProfileAboutDraft}
+        onAboutDraftChange={setMeshchatProfileAboutDraft}
+        inviteQuery={meshchatInviteQuery}
+        onInviteQueryChange={setMeshchatInviteQuery}
+        inviteIds={meshchatInviteIds}
+        setInviteIds={setMeshchatInviteIds}
+        contacts={contacts}
+        actionBusy={actionBusy}
+        onSave={handleSaveMeshchatGroupProfile}
+        onInvite={handleInviteMeshchatMembers}
+        resolveAvatarSrc={resolveAvatarSrc}
+      />
+
       <RetentionModal
         open={retentionModalOpen}
         onClose={() => setRetentionModalOpen(false)}

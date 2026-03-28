@@ -1,4 +1,4 @@
-import React from "react";
+﻿import React from "react";
 
 export interface PlusMenuProps {
   open: boolean;
@@ -6,6 +6,7 @@ export interface PlusMenuProps {
   onAddFriend: () => void;
   onCreateGroup: () => void;
   onMeshJoin: () => void;
+  onJoinMeshchatSuperGroup: () => void;
   onCreatePublicChannel: () => void;
   onSubscribePublicChannel: () => void;
 }
@@ -16,6 +17,7 @@ export function PlusMenu({
   onAddFriend,
   onCreateGroup,
   onMeshJoin,
+  onJoinMeshchatSuperGroup,
   onCreatePublicChannel,
   onSubscribePublicChannel
 }: PlusMenuProps) {
@@ -81,6 +83,28 @@ export function PlusMenu({
           }}
         >
           发起群聊
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            onJoinMeshchatSuperGroup();
+            onClose();
+          }}
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: "10px 10px",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "transparent",
+            color: "#e5e7eb",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: 700,
+            textAlign: "left"
+          }}
+        >
+          加入超级群聊
         </button>
         <button
           type="button"

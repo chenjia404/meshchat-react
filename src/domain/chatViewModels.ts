@@ -1,9 +1,10 @@
-import type {
+﻿import type {
   ContactRaw,
   ContactViewRow,
   ConversationRaw,
   GroupRaw,
   MeshserverGroupThread,
+  MeshchatSuperGroupListEntry,
   PublicChannelListEntry,
   ThreadKind
 } from "../types";
@@ -67,6 +68,7 @@ export function buildChatThreadListItems(
   conversations: ConversationRaw[],
   groups: GroupRaw[],
   meshGroups: MeshserverGroupThread[],
+  meshchatSuperGroups: MeshchatSuperGroupListEntry[],
   publicChannels: PublicChannelListEntry[],
   contactsRaw: ContactRaw[],
   contactAvatarMap: Map<string, string>
@@ -121,6 +123,21 @@ export function buildChatThreadListItems(
     }
   }));
 
+  const meshchatRows: Row[] = meshchatSuperGroups.map(e => ({
+    activityMs: Math.max(0, e.updatedAtSec) * 1000,
+    item: {
+      id: e.threadId,
+      kind: "meshchat_super_group" as ThreadKind,
+      title: e.title.trim() || "超级群聊",
+      subtitle: "超级群聊",
+      lastMessage: e.lastMessagePreview || "",
+      lastTime: relativeTimeFromUnixSec(e.updatedAtSec),
+      meshchatServerBase: e.serverBase,
+      meshchatGroupId: e.groupId,
+      myUserId: e.myUserId !== undefined ? String(e.myUserId) : undefined
+    }
+  }));
+
   const publicRows: Row[] = publicChannels.map(pc => ({
     /** 同秒时按 subscriptionOrder 与 GET /subscriptions 顺序一致 */
     activityMs:
@@ -140,7 +157,7 @@ export function buildChatThreadListItems(
     }
   }));
 
-  const merged = [...directRows, ...groupRows, ...meshRows, ...publicRows];
+  const merged = [...directRows, ...groupRows, ...meshRows, ...meshchatRows, ...publicRows];
   merged.sort((a, b) => {
     if (b.activityMs !== a.activityMs) return b.activityMs - a.activityMs;
     const tie = `${a.item.kind}:${a.item.id}`.localeCompare(
