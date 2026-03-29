@@ -50,10 +50,36 @@ function normalizeOne(raw: unknown): PublicChannelMessage | null {
         ? parseInt(o.updated_at, 10)
         : created;
   const contentRaw = o.content;
-  const content =
-    contentRaw && typeof contentRaw === "object"
-      ? (contentRaw as PublicChannelMessage["content"])
-      : undefined;
+  let content: PublicChannelMessage["content"] | undefined;
+  if (typeof contentRaw === "string") {
+    const s = contentRaw.trim();
+    if (s) {
+      try {
+        const p = JSON.parse(contentRaw) as unknown;
+        if (p && typeof p === "object" && !Array.isArray(p)) {
+          content = p as PublicChannelMessage["content"];
+        } else {
+          content = { text: contentRaw };
+        }
+      } catch {
+        content = { text: contentRaw };
+      }
+    }
+  } else if (contentRaw && typeof contentRaw === "object") {
+    content = { ...(contentRaw as PublicChannelMessage["content"]) };
+  }
+  const pickStr = (v: unknown): string | undefined =>
+    typeof v === "string" ? v : undefined;
+  const nestedText = pickStr(content?.text);
+  const textMerged =
+    (nestedText != null && nestedText.length > 0 ? nestedText : undefined) ??
+    pickStr(o.text) ??
+    pickStr(o.plaintext) ??
+    pickStr(o.body) ??
+    pickStr(o.message_text);
+  if (textMerged !== undefined) {
+    content = { ...(content ?? {}), text: textMerged };
+  }
   return {
     channel_id: typeof o.channel_id === "string" ? o.channel_id : undefined,
     message_id: messageId,
@@ -75,7 +101,10 @@ function normalizeOne(raw: unknown): PublicChannelMessage | null {
   };
 }
 
-/** 从创建频道等接口响应中取出 channel_id（后端已保证返回时可优先匹配） */
+/**
+ * 从创建频道等接口响应中取出 channel_id（格式：`ownerPeerId:uuidv7`）。
+ * 后端已保证返回时可优先匹配。
+ */
 export function extractChannelIdFromCreateResponse(raw: unknown): string {
   const pick = (r: Record<string, unknown>): string => {
     const a = r.channel_id;

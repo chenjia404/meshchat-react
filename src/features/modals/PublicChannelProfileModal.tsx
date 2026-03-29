@@ -120,7 +120,11 @@ export function PublicChannelProfileModal({
             </div>
           </div>
 
-          <CopyRow label="频道 UUID（channel_id）" value={detail.channelId} monospace />
+          <CopyRow
+            label="频道 ID（ownerPeerId:uuidv7）"
+            value={detail.channelId}
+            monospace
+          />
 
           <CopyRow
             label="创建者 Peer ID"

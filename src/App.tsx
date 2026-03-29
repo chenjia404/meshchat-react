@@ -368,7 +368,7 @@ const App: React.FC = () => {
   const [subscribePublicChannelOpen, setSubscribePublicChannelOpen] = useState(false);
   const [publicChannelNameDraft, setPublicChannelNameDraft] = useState("");
   const [publicChannelBioDraft, setPublicChannelBioDraft] = useState("");
-  const [subscribeChannelUuidDraft, setSubscribeChannelUuidDraft] = useState("");
+  const [subscribeChannelIdDraft, setSubscribeChannelIdDraft] = useState("");
 
   // 群资料（管理员可改名/解散/邀请）
   const [groupProfileOpen, setGroupProfileOpen] = useState(false);
@@ -2881,7 +2881,7 @@ const App: React.FC = () => {
   };
 
   const handleSubscribePublicChannel = async () => {
-    const raw = subscribeChannelUuidDraft.trim();
+    const raw = subscribeChannelIdDraft.trim();
     if (!raw) return;
     setActionBusy("publicChannelSubscribe");
     try {
@@ -2890,7 +2890,7 @@ const App: React.FC = () => {
       });
       await refreshPublicChannelSubscriptions(me?.peer_id);
       setSubscribePublicChannelOpen(false);
-      setSubscribeChannelUuidDraft("");
+      setSubscribeChannelIdDraft("");
       setActiveTab("chat");
       setSelectedThreadId(raw);
       setSelectedThreadKind("public_channel");
@@ -3301,8 +3301,8 @@ const App: React.FC = () => {
       <SubscribePublicChannelModal
         open={subscribePublicChannelOpen}
         onClose={() => setSubscribePublicChannelOpen(false)}
-        channelUuid={subscribeChannelUuidDraft}
-        onChannelUuidChange={setSubscribeChannelUuidDraft}
+        channelId={subscribeChannelIdDraft}
+        onChannelIdChange={setSubscribeChannelIdDraft}
         actionBusy={actionBusy === "publicChannelSubscribe"}
         onSubscribe={handleSubscribePublicChannel}
       />

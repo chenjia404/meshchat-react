@@ -105,8 +105,9 @@ export function CreatePublicChannelModal({
 export interface SubscribePublicChannelModalProps {
   open: boolean;
   onClose: () => void;
-  channelUuid: string;
-  onChannelUuidChange: (v: string) => void;
+  /** 完整 channel_id：`{ownerPeerId}:{uuidv7}`（ownerPeerId 为 libp2p peer id） */
+  channelId: string;
+  onChannelIdChange: (v: string) => void;
   actionBusy: boolean;
   onSubscribe: () => void;
 }
@@ -114,8 +115,8 @@ export interface SubscribePublicChannelModalProps {
 export function SubscribePublicChannelModal({
   open,
   onClose,
-  channelUuid,
-  onChannelUuidChange,
+  channelId,
+  onChannelIdChange,
   actionBusy,
   onSubscribe
 }: SubscribePublicChannelModalProps) {
@@ -123,18 +124,20 @@ export function SubscribePublicChannelModal({
     <Modal open={open} onClose={onClose} title="订阅公开频道">
       <div>
         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
-          输入频道的 UUID（channel_id），将调用{" "}
+          输入完整 <code style={{ fontSize: 11 }}>channel_id</code>（格式：{" "}
+          <code style={{ fontSize: 11 }}>ownerPeerId:uuidv7</code>
+          ，ownerPeerId 为 libp2p peer id），将调用{" "}
           <code style={{ fontSize: 11 }}>
             POST /api/v1/public-channels/{"{id}"}/subscribe
           </code>
           。
         </div>
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 13, marginBottom: 6 }}>频道 UUID</div>
+          <div style={{ fontSize: 13, marginBottom: 6 }}>频道 ID（channel_id）</div>
           <input
-            value={channelUuid}
-            onChange={e => onChannelUuidChange(e.target.value)}
-            placeholder="0195f3f0-8d4a-7c12-b2c1-9db1f0a9e123"
+            value={channelId}
+            onChange={e => onChannelIdChange(e.target.value)}
+            placeholder="12D3KooWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx:0195f3f0-8d4a-7c12-b2c1-9db1f0a9e123"
             style={{
               width: "100%",
               padding: "10px 10px",
@@ -163,17 +166,17 @@ export function SubscribePublicChannelModal({
           </button>
           <button
             type="button"
-            disabled={actionBusy || !channelUuid.trim()}
+            disabled={actionBusy || !channelId.trim()}
             onClick={() => void onSubscribe()}
             style={{
               padding: "10px 14px",
               borderRadius: 10,
               border: "none",
               background:
-                actionBusy || !channelUuid.trim() ? "rgba(88,166,255,0.35)" : "#58a6ff",
+                actionBusy || !channelId.trim() ? "rgba(88,166,255,0.35)" : "#58a6ff",
               color: "#08111c",
               fontWeight: 800,
-              cursor: actionBusy || !channelUuid.trim() ? "not-allowed" : "pointer"
+              cursor: actionBusy || !channelId.trim() ? "not-allowed" : "pointer"
             }}
           >
             {actionBusy ? "订阅中…" : "订阅"}

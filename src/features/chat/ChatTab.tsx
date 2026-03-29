@@ -39,7 +39,7 @@ import {
   publicChannelMediaRef,
   resolvePublicChannelAssetUrl
 } from "../../utils";
-import { directFileUrl, groupFileUrl } from "../../api";
+import { directFileUrl, groupFileUrl, post } from "../../api";
 
 /** 會話列表：最後一則訊息預覽（過長取開頭一段並加省略號） */
 function threadLastMessagePreview(text: string | undefined, maxChars = 36): string {
@@ -57,14 +57,64 @@ function normalizeMessageMultilineText(text: string | undefined): string {
 }
 
 /**
+ * MessageInput onSend 第 4 个参数为 contenteditable 子节点快照（cloneNode），
+ * 从中递归提取可保留 &lt;br&gt; 与块级换行；比 textContent/innerText 可靠。
+ */
+function walkEditableNode(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const el = node as Element;
+  const tag = el.tagName.toUpperCase();
+  if (tag === "BR") return "\n";
+  let s = "";
+  for (let i = 0; i < el.childNodes.length; i++) {
+    s += walkEditableNode(el.childNodes[i]!);
+  }
+  if (
+    tag === "DIV" ||
+    tag === "P" ||
+    tag === "LI" ||
+    tag === "H1" ||
+    tag === "H2" ||
+    tag === "H3"
+  ) {
+    s += "\n";
+  }
+  return s;
+}
+
+function nodesListToPlainText(nodes: NodeList | undefined | null): string {
+  if (!nodes || nodes.length === 0) return "";
+  let out = "";
+  for (let i = 0; i < nodes.length; i++) {
+    out += walkEditableNode(nodes[i]!);
+  }
+  return out.replace(/\r\n/g, "\n");
+}
+
+/**
  * MessageInput onSend 参数为 (innerHtml, textContent, innerText, nodes)。
- * contenteditable 下 textContent 可能丢失块级换行，发送正文应优先用 innerText。
  */
 function plainTextFromMessageInput(
-  _innerHtml: string,
+  innerHtml: string,
   textContent: string,
-  innerText: string
+  innerText: string,
+  nodes?: NodeList | null
 ): string {
+  const fromNodes = nodesListToPlainText(nodes ?? undefined);
+  if (fromNodes.length > 0) return fromNodes;
+
+  if (typeof document !== "undefined" && innerHtml.trim()) {
+    const el = document.createElement("div");
+    el.innerHTML = innerHtml;
+    el.querySelectorAll("br").forEach(br => {
+      br.replaceWith(document.createTextNode("\n"));
+    });
+    const fromHtml = (el.innerText || el.textContent || "").replace(/\r\n/g, "\n");
+    if (fromHtml.length > 0) return fromHtml;
+  }
   return (innerText || textContent || "").replace(/\r\n/g, "\n");
 }
 
@@ -527,6 +577,12 @@ export function ChatTab(props: ChatTabProps) {
                     key={`${thread.kind}:${thread.id}`}
                     {...(directRowMenuHandlers || {})}
                     onClick={() => {
+                      if (thread.kind === "public_channel") {
+                        void post(
+                          `/api/v1/public-channels/${encodeURIComponent(thread.id)}/sync`,
+                          {}
+                        ).catch(() => null);
+                      }
                       initialScrollDoneKeyRef.current = null;
                       pendingScrollUnreadRef.current = thread.unreadCount ?? 0;
                       setSessionListOpenSeq(s => s + 1);
@@ -1697,8 +1753,8 @@ export function ChatTab(props: ChatTabProps) {
                         <MessageInput
                           placeholder="输入讯息…（Shift+Enter 换行，可拖入图片）"
                           attachButton={false}
-                          onSend={(html, tc, it) =>
-                            void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                          onSend={(html, tc, it, nodes) =>
+                            void handleSendMessage(plainTextFromMessageInput(html, tc, it, nodes))
                           }
                         />
                       </div>
@@ -1750,8 +1806,8 @@ export function ChatTab(props: ChatTabProps) {
                         <MessageInput
                           placeholder="输入讯息…（Shift+Enter 换行，可拖入或粘贴文件）"
                           attachButton={false}
-                          onSend={(html, tc, it) =>
-                            void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                          onSend={(html, tc, it, nodes) =>
+                            void handleSendMessage(plainTextFromMessageInput(html, tc, it, nodes))
                           }
                         />
                       </div>
@@ -1804,8 +1860,8 @@ export function ChatTab(props: ChatTabProps) {
                           <MessageInput
                             placeholder="文字，或拖拽/粘贴/选择图片、视频、音频与文件…"
                             attachButton={false}
-                            onSend={(html, tc, it) =>
-                              void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                            onSend={(html, tc, it, nodes) =>
+                              void handleSendMessage(plainTextFromMessageInput(html, tc, it, nodes))
                             }
                           />
                         </div>
@@ -1860,8 +1916,8 @@ export function ChatTab(props: ChatTabProps) {
                     <MessageInput
                       placeholder="输入讯息…（Shift+Enter 换行，可拖入或粘贴文件）"
                       attachButton={false}
-                      onSend={(html, tc, it) =>
-                        void handleSendMessage(plainTextFromMessageInput(html, tc, it))
+                      onSend={(html, tc, it, nodes) =>
+                        void handleSendMessage(plainTextFromMessageInput(html, tc, it, nodes))
                       }
                     />
                   )}

@@ -1,5 +1,6 @@
 /** GET /api/v1/public-channels/subscriptions 单条摘要（与 mesh-proxy 对齐） */
 export interface ChannelSummary {
+  /** 格式：`{ownerPeerId}:{uuidv7}`，ownerPeerId 为 libp2p peer id */
   channel_id: string;
   name?: string;
   owner_peer_id?: string;
@@ -13,6 +14,7 @@ export interface ChannelSummary {
 
 /** GET /api/v1/public-channels/{id} 简介页展示用（在列表项基础上增加资料字段） */
 export interface PublicChannelProfileDetail {
+  /** 格式：`{ownerPeerId}:{uuidv7}` */
   channelId: string;
   name: string;
   ownerPeerId: string;
@@ -27,6 +29,7 @@ export interface PublicChannelProfileDetail {
 
 /** 去中心化公开频道（/api/v1/public-channels）本地列表项 */
 export interface PublicChannelListEntry {
+  /** 格式：`{ownerPeerId}:{uuidv7}` */
   channelId: string;
   name: string;
   ownerPeerId: string;
@@ -41,6 +44,7 @@ export interface PublicChannelListEntry {
 
 /** GET messages 返回的单条消息（与协议文档对齐的精简视图） */
 export interface PublicChannelMessage {
+  /** 格式：`{ownerPeerId}:{uuidv7}` */
   channel_id?: string;
   message_id: number;
   version?: number;
